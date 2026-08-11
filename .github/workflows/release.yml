@@ -1,0 +1,115 @@
+name: Hermes Control Center release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+      - "hermes-extensions-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(python - <<'PY'
+          from pathlib import Path
+          for line in Path('plugin.yaml').read_text('utf-8').splitlines():
+              if line.startswith('version:'):
+                  print(line.partition(':')[2].strip().strip('"').strip("'"))
+                  break
+          PY
+          )
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Validate and build source
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest ruff fastapi pydantic
+          python -m compileall -q .
+          ruff check .
+          for file in dashboard/src/api.js dashboard/src/components.js dashboard/src/app.js dashboard/src/index.js; do node --check "$file"; done
+          python dashboard/build_bundle.py
+          node --check dashboard/dist/index.js
+          pytest -q tests
+
+      - name: Build isolated release tree
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          OUT="release/hermes-control-center-v${VERSION}"
+          mkdir -p "$OUT"
+          rsync -a ./ "$OUT/" \
+            --exclude .git \
+            --exclude .github \
+            --exclude tests \
+            --exclude release \
+            --exclude __pycache__ \
+            --exclude .pytest_cache
+          python "$OUT/dashboard/build_bundle.py" --root "$OUT/dashboard"
+          python - <<PY
+          import json
+          from pathlib import Path
+          root = Path('$OUT')
+          manifest = json.loads((root/'dashboard/manifest.json').read_text('utf-8'))
+          assert manifest['entry'] == 'dist/index.js'
+          assert manifest['api'] == 'plugin_api.py'
+          assert manifest['icon'] == 'Activity'
+          required = [
+              'plugin.yaml','__init__.py','install.ps1','doctor.ps1','compatibility.py','tools.py',
+              'dashboard/manifest.json','dashboard/build_bundle.py','dashboard/src/api.js',
+              'dashboard/src/components.js','dashboard/src/app.js','dashboard/src/index.js',
+              'dashboard/dist/index.js','dashboard/dist/style.css','dashboard/plugin_api.py',
+              'management/overview.py','management/service.py','task_center/service_v3.py',
+              'wechat/adapter.py','wechat/runtime.py','platforms/wechat-desktop/plugin.yaml',
+              'platforms/wechat-desktop/adapter.py'
+          ]
+          for rel in required:
+              assert (root/rel).is_file(), rel
+          PY
+          (cd release && zip -qr "hermes-control-center-v${VERSION}.zip" "hermes-control-center-v${VERSION}")
+          cd release
+          sha256sum "hermes-control-center-v${VERSION}.zip" > "hermes-control-center-v${VERSION}.zip.sha256"
+
+      - name: Validate release archive isolation
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          unzip -l "release/hermes-control-center-v${VERSION}.zip" > /tmp/archive.txt
+          ! grep -q "openakita" /tmp/archive.txt
+          ! grep -q "/tests/" /tmp/archive.txt
+          grep -q "dashboard/dist/index.js" /tmp/archive.txt
+          grep -q "wechat/runtime.py" /tmp/archive.txt
+          grep -q "platforms/wechat-desktop/plugin.yaml" /tmp/archive.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hermes-control-center-v${{ steps.version.outputs.version }}
+          path: |
+            release/hermes-control-center-v${{ steps.version.outputs.version }}.zip
+            release/hermes-control-center-v${{ steps.version.outputs.version }}.zip.sha256
+
+      - name: Publish GitHub Release for tag builds
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release create "$GITHUB_REF_NAME" \
+            "release/hermes-control-center-v${VERSION}.zip" \
+            "release/hermes-control-center-v${VERSION}.zip.sha256" \
+            --title "Hermes Control Center v${VERSION}" \
+            --notes "Standalone Hermes Control Center v${VERSION}: Management Center UI, Agents, Tasks, Projects compatibility, hardened Windows WeChat connector, transactional installer and doctor checks."
