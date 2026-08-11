@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+import shutil
+import subprocess
+import threading
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+
+@dataclass(frozen=True)
+class HermesCapabilities:
+    hermes: bool
+    plugins: bool
+    dashboard: bool
+    profile: bool
+    project: bool
+    cron: bool
+    kanban: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+_CACHE_TTL_SECONDS = 45.0
+_cache_lock = threading.RLock()
+_cache_value: HermesCapabilities | None = None
+_cache_at = 0.0
+_cache_binary = ""
+
+
+def _supports(hermes: str, command: str) -> bool:
+    try:
+        proc = subprocess.run(
+            [hermes, command, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    text = f"{proc.stdout}\n{proc.stderr}".lower()
+    if "invalid choice" in text or "no such command" in text or "unknown command" in text:
+        return False
+    return proc.returncode == 0
+
+
+def _resolve_binary(hermes: str | None = None) -> str | None:
+    requested = str(hermes or "hermes")
+    resolved = shutil.which(requested)
+    if resolved:
+        return resolved
+    candidate = Path(requested).expanduser()
+    if candidate.is_file():
+        return str(candidate.resolve())
+    return None
+
+
+def _detect_uncached(hermes: str | None = None) -> HermesCapabilities:
+    binary = _resolve_binary(hermes)
+    if not binary:
+        return HermesCapabilities(False, False, False, False, False, False, False)
+    return HermesCapabilities(
+        hermes=True,
+        plugins=_supports(binary, "plugins"),
+        dashboard=_supports(binary, "dashboard"),
+        profile=_supports(binary, "profile"),
+        project=_supports(binary, "project"),
+        cron=_supports(binary, "cron"),
+        kanban=_supports(binary, "kanban"),
+    )
+
+
+def detect_capabilities(
+    hermes: str | None = None,
+    *,
+    force: bool = False,
+    ttl_seconds: float = _CACHE_TTL_SECONDS,
+) -> HermesCapabilities:
+    global _cache_at, _cache_binary, _cache_value
+    binary = _resolve_binary(hermes) or ""
+    now = time.monotonic()
+    with _cache_lock:
+        if (
+            not force
+            and _cache_value is not None
+            and _cache_binary == binary
+            and now - _cache_at < max(0.0, float(ttl_seconds))
+        ):
+            return _cache_value
+        value = _detect_uncached(binary or None)
+        _cache_value = value
+        _cache_at = now
+        _cache_binary = binary
+        return value
+
+
+def clear_capability_cache() -> None:
+    global _cache_at, _cache_binary, _cache_value
+    with _cache_lock:
+        _cache_value = None
+        _cache_at = 0.0
+        _cache_binary = ""
+
+
+def project_unavailable_payload() -> dict[str, Any]:
+    return {
+        "supported": False,
+        "items": [],
+        "message": (
+            "This Hermes installation does not expose the native 'hermes project' command. "
+            "Agents, Tasks, Dashboard and WeChat remain available. Dashboard Project support will "
+            "appear after Hermes is upgraded and capabilities are refreshed; model-facing Project "
+            "tools require the Hermes/plugin process to be restarted or reloaded after that upgrade."
+        ),
+    }
