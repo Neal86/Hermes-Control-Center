@@ -1,0 +1,26 @@
+name: hermes-extensions
+version: "0.5.1"
+description: Standalone Hermes extensions with polished accessible Management Center UI, hardened Windows WeChat automation, task management, and native Agent/Project administration when supported
+provides_tools:
+  - wechat_status
+  - wechat_list_chats
+  - wechat_get_unread_chats
+  - wechat_get_messages
+  - wechat_send_message
+  - task_center_overview
+  - task_center_upcoming
+  - task_center_create
+  - task_center_update
+  - task_center_action
+  - task_center_history
+  - management_overview
+  - agent_list
+  - agent_get
+  - agent_create
+  - agent_update
+  - agent_action
+  - project_list
+  - project_get
+  - project_create
+  - project_update
+  - project_action
