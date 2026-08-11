@@ -1,0 +1,14 @@
+{
+  "name": "hermes-extensions",
+  "label": "Management Center",
+  "description": "Hermes Agents, Projects, Tasks, WeChat status, runtime controls, and extension management.",
+  "icon": "Activity",
+  "version": "0.5.1",
+  "tab": {
+    "path": "/management-center",
+    "position": "after:cron"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}
