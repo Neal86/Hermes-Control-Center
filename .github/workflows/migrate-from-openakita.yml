@@ -1,0 +1,226 @@
+name: Migrate Hermes Control Center
+
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/migrate-from-openakita.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout target
+        uses: actions/checkout@v4
+        with:
+          path: target
+          fetch-depth: 0
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          repository: Neal86/openakita
+          ref: feature/hermes-extensions
+          path: source
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Copy standalone plugin to repository root
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd target
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          rsync -a ../source/hermes-extensions/ ./ --exclude __pycache__ --exclude .pytest_cache
+          mkdir -p .github/workflows
+          rm -f .github/workflows/migrate-from-openakita.yml
+      - name: Rewrite standalone repository metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd target
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('README.md')
+          text = p.read_text('utf-8')
+          text = text.replace('# Hermes Extensions', '# Hermes Control Center', 1)
+          text = text.replace('Neal86/openakita', 'Neal86/Hermes-Control-Center')
+          text = text.replace('feature/hermes-extensions', 'main')
+          marker = 'Standalone extensions for **NousResearch/hermes-agent**.'
+          if marker in text and 'Repository:' not in text:
+              text = text.replace(marker, marker + '\n\nRepository: `Neal86/Hermes-Control-Center`.')
+          p.write_text(text, 'utf-8')
+          PY
+      - name: Create standalone CI workflow
+        shell: bash
+        run: |
+          cat > target/.github/workflows/check.yml <<'YAML'
+          name: Hermes Control Center check
+          on:
+            push:
+              branches: [main]
+            pull_request:
+            workflow_dispatch:
+          jobs:
+            validate:
+              runs-on: ubuntu-latest
+              timeout-minutes: 15
+              steps:
+                - uses: actions/checkout@v4
+                - uses: actions/setup-python@v5
+                  with:
+                    python-version: "3.11"
+                - uses: actions/setup-node@v4
+                  with:
+                    node-version: "20"
+                - name: Install dependencies
+                  run: |
+                    python -m pip install --upgrade pip
+                    python -m pip install -r requirements.txt pytest ruff fastapi pydantic
+                - name: Validate Python and tests
+                  run: |
+                    python -m compileall -q .
+                    ruff check .
+                    pytest -q tests
+                - name: Build and validate Dashboard
+                  run: |
+                    for file in dashboard/src/api.js dashboard/src/components.js dashboard/src/app.js dashboard/src/index.js; do node --check "$file"; done
+                    python dashboard/build_bundle.py
+                    node --check dashboard/dist/index.js
+                - name: Validate standalone surfaces
+                  run: |
+                    python - <<'PY'
+                    import json
+                    from pathlib import Path
+                    root=Path('.')
+                    def ver(path):
+                        for line in path.read_text('utf-8').splitlines():
+                            if line.strip().startswith('version:'):
+                                return line.split(':',1)[1].strip().strip('"').strip("'")
+                        raise AssertionError(path)
+                    manifest=json.loads((root/'dashboard/manifest.json').read_text('utf-8'))
+                    assert ver(root/'plugin.yaml') == ver(root/'platforms/wechat-desktop/plugin.yaml') == manifest['version'] == '0.5.1'
+                    assert manifest['entry']=='dist/index.js' and manifest['api']=='plugin_api.py'
+                    assert not (root/'hermes-extensions').exists()
+                    assert 'Neal86/openakita' not in (root/'README.md').read_text('utf-8')
+                    PY
+            windows-installer:
+              runs-on: windows-latest
+              timeout-minutes: 20
+              steps:
+                - uses: actions/checkout@v4
+                - uses: actions/setup-python@v5
+                  with:
+                    python-version: "3.11"
+                - name: Parse PowerShell
+                  shell: pwsh
+                  run: |
+                    foreach ($file in @("install.ps1", "doctor.ps1")) {
+                      $tokens=$null; $errors=$null
+                      [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+                      if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Error; exit 1 }
+                    }
+          YAML
+      - name: Create standalone release workflow
+        shell: bash
+        run: |
+          cat > target/.github/workflows/release.yml <<'YAML'
+          name: Hermes Control Center release
+          on:
+            workflow_dispatch:
+            push:
+              tags: ["v*"]
+          permissions:
+            contents: write
+          jobs:
+            package:
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@v4
+                - uses: actions/setup-python@v5
+                  with:
+                    python-version: "3.11"
+                - uses: actions/setup-node@v4
+                  with:
+                    node-version: "20"
+                - name: Validate source
+                  run: |
+                    python -m pip install --upgrade pip
+                    python -m pip install -r requirements.txt pytest ruff fastapi pydantic
+                    python -m compileall -q .
+                    ruff check .
+                    pytest -q tests
+                    for file in dashboard/src/api.js dashboard/src/components.js dashboard/src/app.js dashboard/src/index.js; do node --check "$file"; done
+                    python dashboard/build_bundle.py
+                    node --check dashboard/dist/index.js
+                - name: Read version
+                  id: version
+                  run: |
+                    VERSION=$(python - <<'PY'
+                    from pathlib import Path
+                    for line in Path('plugin.yaml').read_text('utf-8').splitlines():
+                        if line.startswith('version:'):
+                            print(line.split(':',1)[1].strip().strip('"').strip("'")); break
+                    PY
+                    )
+                    echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+                - name: Build standalone archive
+                  run: |
+                    VERSION="${{ steps.version.outputs.version }}"
+                    OUT="release/Hermes-Control-Center-v${VERSION}"
+                    mkdir -p "$OUT"
+                    rsync -a ./ "$OUT/" --exclude .git --exclude .github --exclude release --exclude tests --exclude __pycache__ --exclude .pytest_cache
+                    python "$OUT/dashboard/build_bundle.py" --root "$OUT/dashboard"
+                    (cd release && zip -qr "Hermes-Control-Center-v${VERSION}.zip" "Hermes-Control-Center-v${VERSION}")
+                    cd release
+                    sha256sum "Hermes-Control-Center-v${VERSION}.zip" > "Hermes-Control-Center-v${VERSION}.zip.sha256"
+                - uses: actions/upload-artifact@v4
+                  with:
+                    name: Hermes-Control-Center-v${{ steps.version.outputs.version }}
+                    path: |
+                      release/Hermes-Control-Center-v${{ steps.version.outputs.version }}.zip
+                      release/Hermes-Control-Center-v${{ steps.version.outputs.version }}.zip.sha256
+                - name: Publish tag release
+                  if: startsWith(github.ref, 'refs/tags/v')
+                  env:
+                    GH_TOKEN: ${{ github.token }}
+                  run: |
+                    VERSION="${{ steps.version.outputs.version }}"
+                    gh release create "$GITHUB_REF_NAME" release/Hermes-Control-Center-v${VERSION}.zip release/Hermes-Control-Center-v${VERSION}.zip.sha256 --title "Hermes Control Center v${VERSION}" --generate-notes
+          YAML
+      - name: Build bundle and validate migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd target
+          python dashboard/build_bundle.py
+          node --check dashboard/dist/index.js
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path('.')
+          required=['README.md','plugin.yaml','install.ps1','doctor.ps1','compatibility.py','dashboard/manifest.json','dashboard/dist/index.js','dashboard/plugin_api.py','management/service.py','task_center/service_v3.py','wechat/runtime.py','platforms/wechat-desktop/plugin.yaml','.github/workflows/check.yml','.github/workflows/release.yml']
+          for rel in required:
+              assert (root/rel).is_file(), rel
+          manifest=json.loads((root/'dashboard/manifest.json').read_text('utf-8'))
+          assert manifest['version']=='0.5.1'
+          assert 'Neal86/openakita' not in (root/'README.md').read_text('utf-8')
+          assert not (root/'hermes-extensions').exists()
+          PY
+      - name: Commit migrated repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd target
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: migrate Hermes Control Center v0.5.1 from OpenAkita"
+          git push origin HEAD:main
