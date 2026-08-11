@@ -148,7 +148,7 @@ jobs:
           & .\doctor.ps1 -Installed -Json | Out-Host
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Smoke-test real Hermes Dashboard with plugin API
+      - name: Smoke-test real Hermes Dashboard and plugin mounting
         shell: pwsh
         run: |
           $env:PATH = "$env:UV_TOOL_BIN;$env:PATH"
@@ -157,28 +157,42 @@ jobs:
           $hermes = (Get-Command hermes -ErrorAction Stop).Source
           $proc = Start-Process -FilePath $hermes -ArgumentList @("dashboard", "--no-open", "--skip-build") -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           try {
-            $ready = $false
+            $rootReady = $false
             for ($i = 0; $i -lt 60; $i++) {
               if ($proc.HasExited) { break }
               try {
-                $response = Invoke-RestMethod -Uri "http://127.0.0.1:9119/api/plugins/hermes-extensions/capabilities" -TimeoutSec 2
-                $response | ConvertTo-Json -Depth 6 | Write-Host
-                if ($null -ne $response.capabilities -and $null -ne $response.project_supported) {
-                  $ready = $true
-                  break
-                }
+                $root = Invoke-WebRequest -Uri "http://127.0.0.1:9119/" -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 2
+                if ($root.StatusCode -eq 200) { $rootReady = $true; break }
               } catch {}
               Start-Sleep -Seconds 1
             }
-            if (-not $ready) {
+            if (-not $rootReady) {
               Write-Host "===== dashboard stdout ====="
               if (Test-Path $stdout) { Get-Content $stdout | Select-Object -Last 200 | Out-Host }
               Write-Host "===== dashboard stderr ====="
               if (Test-Path $stderr) { Get-Content $stderr | Select-Object -Last 200 | Out-Host }
-              throw "Real Hermes Dashboard plugin API did not become ready on port 9119"
+              throw "Real Hermes Dashboard root did not become ready on port 9119"
             }
-            $root = Invoke-WebRequest -Uri "http://127.0.0.1:9119/" -UseBasicParsing -TimeoutSec 5
-            if ($root.StatusCode -ne 200) { throw "Dashboard root returned HTTP $($root.StatusCode)" }
+
+            $manifest = Invoke-WebRequest -Uri "http://127.0.0.1:9119/dashboard-plugins/hermes-extensions/manifest.json" -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 5
+            Write-Host "Plugin manifest HTTP: $($manifest.StatusCode)"
+            if ($manifest.StatusCode -ne 200) { throw "Dashboard did not serve hermes-extensions manifest" }
+            if ($manifest.Content -notmatch '"name"\s*:\s*"hermes-extensions"') { throw "Served plugin manifest was unexpected" }
+
+            $api = Invoke-WebRequest -Uri "http://127.0.0.1:9119/api/plugins/hermes-extensions/capabilities" -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 5
+            Write-Host "Plugin API HTTP: $($api.StatusCode)"
+            if ($api.StatusCode -eq 404) { throw "Dashboard did not mount hermes-extensions backend API" }
+            if ($api.StatusCode -notin @(200, 401, 403)) { throw "Unexpected plugin API HTTP $($api.StatusCode)" }
+            if ($api.StatusCode -eq 200 -and $api.Content -notmatch 'project_supported') { throw "Plugin API response did not contain capability payload" }
+
+            $errorLog = Join-Path $env:HERMES_HOME "logs\errors.log"
+            if (Test-Path $errorLog) {
+              $errors = Get-Content $errorLog -Raw
+              $errors | Write-Host
+              if ($errors -match "Failed to load plugin.*hermes-extensions|hermes-extensions.*plugin API.*failed|Failed to mount.*hermes-extensions") {
+                throw "Hermes logged a backend load/mount failure for hermes-extensions"
+              }
+            }
           } finally {
             try { & hermes dashboard --stop | Out-Host } catch {}
             if (-not $proc.HasExited) {
