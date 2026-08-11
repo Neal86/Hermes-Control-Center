@@ -1,0 +1,2 @@
+croniter>=2.0,<7
+PyYAML>=6.0,<7
