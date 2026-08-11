@@ -63,7 +63,7 @@ def test_dialogs_are_accessible_and_protect_unsaved_changes() -> None:
     assert "Discard unsaved changes?" in JS
     assert "ConfirmDialog" in JS
     assert "guardedClose" in JS
-    assert "modalStack" in JS
+    assert "DIALOG_STACK" in JS
     assert "closeRef" in JS
     assert "confirm(" not in JS
 
