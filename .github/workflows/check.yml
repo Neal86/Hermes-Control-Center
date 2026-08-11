@@ -1,0 +1,111 @@
+name: Hermes Control Center check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest ruff fastapi pydantic
+      - name: Validate Python
+        run: |
+          python -m compileall -q .
+          ruff check .
+      - name: Build and validate Dashboard
+        run: |
+          for file in dashboard/src/api.js dashboard/src/components.js dashboard/src/app.js dashboard/src/index.js; do node --check "$file"; done
+          python dashboard/build_bundle.py
+          node --check dashboard/dist/index.js
+      - name: Run tests
+        run: pytest -q tests
+      - name: Validate standalone repository surfaces
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path('.')
+          manifest = json.loads((root/'dashboard/manifest.json').read_text('utf-8'))
+          assert manifest['version'] == '0.5.1'
+          assert manifest['entry'] == 'dist/index.js'
+          assert manifest['api'] == 'plugin_api.py'
+          assert manifest['icon'] == 'Activity'
+          required = [
+              'plugin.yaml','install.ps1','doctor.ps1','compatibility.py','tools.py','schemas.py',
+              'dashboard/plugin_api.py','dashboard/build_bundle.py','dashboard/src/app.js',
+              'management/service.py','management/overview.py','task_center/service_v3.py',
+              'wechat/adapter.py','wechat/runtime.py','platforms/wechat-desktop/adapter.py',
+              'platforms/wechat-desktop/plugin.yaml'
+          ]
+          for rel in required:
+              assert (root/rel).is_file(), rel
+          readme = (root/'README.md').read_text('utf-8')
+          assert 'Neal86/Hermes-Control-Center' in readme
+          assert not (root/'hermes-extensions').exists()
+          PY
+
+  windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Parse PowerShell
+        shell: pwsh
+        run: |
+          foreach ($file in @("install.ps1", "doctor.ps1")) {
+            $tokens = $null; $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Error; exit 1 }
+          }
+      - name: Build fake Hermes v0.16 environment
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "hx-ci"
+          $bin = Join-Path $root "bin"
+          $appdata = Join-Path $root "AppData\Roaming"
+          $hermesHome = Join-Path $root ".hermes"
+          New-Item -ItemType Directory -Force -Path $bin,$appdata,$hermesHome | Out-Null
+          python -m venv (Join-Path $appdata "uv\tools\hermes-agent")
+          $fake = @'
+          @echo off
+          if "%1"=="--version" (echo Hermes Agent v0.16.0 test& exit /b 0)
+          if "%1"=="project" (echo hermes: error: argument command: invalid choice: 'project' 1>&2& exit /b 2)
+          if "%1"=="plugins" if "%2"=="enable" (echo enabled-%3>>"%HERMES_HOME%\config.yaml"& exit /b 0)
+          if "%1"=="plugins" if "%2"=="list" (echo hermes-extensions enabled 0.5.1 user& echo wechat-desktop enabled 0.5.1 user& exit /b 0)
+          if "%1"=="dashboard" if "%2"=="--status" (echo No hermes dashboard processes running.& exit /b 0)
+          exit /b 0
+          '@
+          Set-Content -LiteralPath (Join-Path $bin "hermes.cmd") -Value $fake -Encoding ASCII
+          "APPDATA=$appdata" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "HERMES_HOME=$hermesHome" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PATH=$bin;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Preflight and install
+        shell: pwsh
+        run: |
+          & .\doctor.ps1 -Preflight -Json | Out-Host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\install.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $plugin = Join-Path $env:HERMES_HOME "plugins\hermes-extensions"
+          foreach ($rel in @("dashboard\dist\index.js", "dashboard\build_bundle.py", "management\overview.py", "task_center\service_v3.py", "wechat\runtime.py")) {
+            if (-not (Test-Path (Join-Path $plugin $rel))) { throw "Missing installed file: $rel" }
+          }
+          & (Join-Path $plugin "doctor.ps1") -Installed -Json | Out-Host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
