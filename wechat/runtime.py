@@ -15,7 +15,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from wechat.adapter import WeChatDesktop as _BaseWeChatDesktop, WeChatUnavailable  # noqa: E402
+from .adapter import WeChatDesktop as _BaseWeChatDesktop, WeChatUnavailable  # noqa: E402
 
 
 _UI_THREAD_LOCK = threading.RLock()
@@ -72,108 +72,83 @@ class _CrossProcessFileLock:
         finally:
             handle.close()
 
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.release()
+        return False
+
+
+def _root_hermes_home() -> Path:
+    raw = os.getenv("HERMES_HOME")
+    if raw:
+        home = Path(raw).expanduser()
+    elif os.name == "nt" and os.getenv("LOCALAPPDATA"):
+        home = Path(os.environ["LOCALAPPDATA"]) / "hermes"
+    else:
+        home = Path.home() / ".hermes"
+    if home.name.startswith("profiles-"):
+        return home.parent
+    return home
+
+
+def _resource_data_dir(resource_id: str | None) -> Path:
+    root = _root_hermes_home() / "plugin-data" / "hermes-extensions" / "wechat"
+    if resource_id:
+        digest = hashlib.sha256(resource_id.encode("utf-8", errors="ignore")).hexdigest()[:24]
+        root = root / digest
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
 
 class WeChatDesktop(_BaseWeChatDesktop):
     """Hardened runtime facade with cross-instance/process UI transactions."""
 
     def __init__(self, data_dir: Path | None = None, *, lock_timeout: float = 15.0) -> None:
         super().__init__(data_dir=data_dir)
-        self._ui_lock_path = self.data_dir / "desktop-ui.lock"
-        self._health_path = self.data_dir / "gateway-health.json"
-        self._ui_lock_timeout = max(0.1, float(lock_timeout))
+        self.lock_timeout = max(0.1, float(lock_timeout))
+        self._lock_path = self.data_dir / "ui.lock"
 
     @contextlib.contextmanager
     def _ui_transaction(self) -> Iterator[None]:
         depth = int(getattr(_LOCK_LOCAL, "depth", 0))
-        if depth:
+        if depth > 0:
             _LOCK_LOCAL.depth = depth + 1
             try:
                 yield
             finally:
                 _LOCK_LOCAL.depth -= 1
             return
-
-        acquired = _UI_THREAD_LOCK.acquire(timeout=self._ui_lock_timeout)
-        if not acquired:
-            raise WeChatUnavailable(
-                "Timed out waiting for another local WeChat operation; refusing concurrent UI automation"
-            )
-        lock = _CrossProcessFileLock(self._ui_lock_path, self._ui_lock_timeout)
-        try:
-            lock.acquire()
-            _LOCK_LOCAL.depth = 1
-            try:
-                yield
-            finally:
-                _LOCK_LOCAL.depth = 0
-                lock.release()
-        finally:
-            _UI_THREAD_LOCK.release()
-
-    def _gateway_health(self) -> dict | None:
-        try:
-            payload = json.loads(self._health_path.read_text("utf-8"))
-            return payload if isinstance(payload, dict) else None
-        except (OSError, json.JSONDecodeError):
-            return None
+        with _UI_THREAD_LOCK:
+            with _CrossProcessFileLock(self._lock_path, self.lock_timeout):
+                _LOCK_LOCAL.depth = 1
+                try:
+                    yield
+                finally:
+                    _LOCK_LOCAL.depth = 0
 
     def status(self) -> dict:
-        result = super().status()
-        result["gateway_health"] = self._gateway_health()
-        result["ui_lock_timeout_seconds"] = self._ui_lock_timeout
-        return result
-
-    def open_chat(self, chat: str) -> None:
         with self._ui_transaction():
-            return super().open_chat(chat)
+            return super().status()
 
-    def list_chats(self, limit: int = 50):
+    def list_chats(self, limit: int = 200) -> list[dict]:
         with self._ui_transaction():
-            return super().list_chats(limit)
+            return super().list_chats(limit=limit)
 
-    def unread_chats(self, limit: int = 50):
+    def get_messages(self, chat: str, limit: int = 50) -> list[dict]:
         with self._ui_transaction():
-            return super().unread_chats(limit)
+            return super().get_messages(chat=chat, limit=limit)
 
-    def get_messages(self, chat: str, limit: int = 20) -> list[dict]:
+    def send_message(self, chat: str, text: str, *, dry_run: bool = False) -> dict:
         with self._ui_transaction():
-            super().open_chat(chat)
-            win = self._main_window()
-            rows = self._message_rows(win, chat)
-            compact: list[dict] = []
-            occurrence: dict[tuple[str, str, str, str, str], int] = defaultdict(int)
-            for row in rows:
-                sender = str(row.get("sender") or "")
-                shown_time = str(row.get("time") or "")
-                direction = str(row.get("direction") or "")
-                text = str(row.get("text") or "")
-                base_identity = (chat, sender, text, shown_time, direction)
-                ordinal = occurrence[base_identity]
-                occurrence[base_identity] += 1
-                identity_source = "\0".join([*base_identity, str(ordinal)])
-                compact.append(
-                    {
-                        "text": text,
-                        "sender": row.get("sender"),
-                        "time": row.get("time"),
-                        "direction": direction,
-                        "message_id": hashlib.sha256(identity_source.encode("utf-8")).hexdigest()[:24],
-                    }
-                )
-            return compact[-max(1, min(int(limit), 100)) :]
+            return super().send_message(chat=chat, text=text, dry_run=dry_run)
 
-    def send_message(
-        self,
-        chat: str,
-        text: str,
-        *,
-        dry_run: bool = False,
-        duplicate_ttl: int = 600,
-    ) -> dict:
+    def get_unread_chats(self, limit: int = 200) -> list[dict]:
         with self._ui_transaction():
-            return super().send_message(
-                chat,
-                text,
-                dry_run=dry_run,
-                duplicate_ttl=duplicate_ttl,
-            )
+            return super().get_unread_chats(limit=limit)
+
+
+def runtime_for_resource(resource_id: str | None) -> WeChatDesktop:
+    return WeChatDesktop(_resource_data_dir(resource_id))
