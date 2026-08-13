@@ -43,8 +43,8 @@ function Get-PortOwnerPid {
     param([int]$Port)
     try {
         $connections = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop
-        $pid = @($connections | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object { $_ -gt 0 }) | Select-Object -First 1
-        if ($pid) { return [int]$pid }
+        $pidValue = @($connections | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object { $_ -gt 0 }) | Select-Object -First 1
+        if ($pidValue) { return [int]$pidValue }
     } catch {}
     try {
         $line = netstat -ano -p tcp | Select-String -Pattern (":$Port\s+.*LISTENING\s+(\d+)\s*$") | Select-Object -First 1
@@ -61,15 +61,14 @@ function Get-ProcessInfoSafe {
 function Test-IsHermesDashboardProcess {
     param([int]$ProcessId)
     if ($ProcessId -le 0) { return $false }
-    $proc = Get-ProcessInfoSafe -ProcessId $ProcessId
-    if (-not $proc) { return $false }
-    $name = [string]$proc.Name
-    $exe = [string]$proc.ExecutablePath
-    $cmd = [string]$proc.CommandLine
+    $procInfo = Get-ProcessInfoSafe -ProcessId $ProcessId
+    if (-not $procInfo) { return $false }
+    $name = [string]$procInfo.Name
+    $exe = [string]$procInfo.ExecutablePath
+    $cmd = [string]$procInfo.CommandLine
     $combined = ($name + " " + $exe + " " + $cmd).ToLowerInvariant()
     $home = $HermesHome.ToLowerInvariant()
 
-    # Native or Python-hosted Hermes both count as Hermes Dashboard.
     if ($combined.Contains("hermes.exe") -and $combined.Contains("dashboard")) { return $true }
     if ($combined.Contains("hermes-agent") -and $combined.Contains("dashboard")) { return $true }
     if ($combined.Contains($home) -and $combined.Contains("dashboard") -and $combined.Contains("hermes")) { return $true }
@@ -79,10 +78,10 @@ function Test-IsHermesDashboardProcess {
 function Get-RunningHermesDashboardPids {
     $result = New-Object System.Collections.Generic.List[int]
     try {
-        foreach ($proc in Get-CimInstance Win32_Process -ErrorAction Stop) {
-            $pid = [int]$proc.ProcessId
-            if ($pid -gt 0 -and (Test-IsHermesDashboardProcess -ProcessId $pid)) {
-                if (-not $result.Contains($pid)) { $result.Add($pid) }
+        foreach ($procInfo in Get-CimInstance Win32_Process -ErrorAction Stop) {
+            $pidValue = [int]$procInfo.ProcessId
+            if ($pidValue -gt 0 -and (Test-IsHermesDashboardProcess -ProcessId $pidValue)) {
+                if (-not $result.Contains($pidValue)) { $result.Add($pidValue) }
             }
         }
     } catch {}
@@ -92,8 +91,8 @@ function Get-RunningHermesDashboardPids {
 function Stop-HermesDashboardPid {
     param([int]$ProcessId)
     if ($ProcessId -le 0) { return }
-    $proc = Get-ProcessInfoSafe -ProcessId $ProcessId
-    if (-not $proc) { return }
+    $procInfo = Get-ProcessInfoSafe -ProcessId $ProcessId
+    if (-not $procInfo) { return }
     if (-not (Test-IsHermesDashboardProcess -ProcessId $ProcessId)) { return }
     Write-Host "Closing Hermes Dashboard process PID $ProcessId..." -ForegroundColor Yellow
     Stop-Process -Id $ProcessId -Force -ErrorAction Stop
@@ -145,13 +144,16 @@ elseif ($preferredInUse) {
     $runningHermes = @(Get-RunningHermesDashboardPids)
     if ($runningHermes.Count -gt 0) {
         Write-Host "Port $PreferredPort belongs to another application, but Hermes Dashboard process(es) also exist: $($runningHermes -join ', ')." -ForegroundColor Yellow
-        foreach ($pid in $runningHermes) {
-            try { Stop-HermesDashboardPid -ProcessId $pid } catch { Write-Host "Could not close Hermes PID $pid: $($_.Exception.Message)" -ForegroundColor Yellow }
+        foreach ($pidValue in $runningHermes) {
+            try {
+                Stop-HermesDashboardPid -ProcessId $pidValue
+            } catch {
+                Write-Host ("Could not close Hermes PID {0}: {1}" -f $pidValue, $_.Exception.Message) -ForegroundColor Yellow
+            }
         }
         Start-Sleep -Milliseconds 500
     }
 
-    # 9119 really belongs to another application. Do not kill it; use a clean port.
     $Port = Find-FreePort
     if ($Port -eq 0) { throw "Port $PreferredPort is used by another application and no free Dashboard port was found from 9120 through 9199." }
     $owner = Get-ProcessInfoSafe -ProcessId $preferredOwner
