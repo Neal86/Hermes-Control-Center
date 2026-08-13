@@ -59,56 +59,34 @@ def wechat_status(args: dict, **kwargs) -> str:
 
 def wechat_list_chats(args: dict, **kwargs) -> str:
     del kwargs
-    return _result(
-        lambda: [row.to_dict() for row in WeChatDesktop().list_chats(int(args.get("limit", 50)))]
-    )
+    return _result(lambda: [row.to_dict() for row in WeChatDesktop().list_chats(int(args.get("limit", 50)))])
 
 
 def wechat_get_unread_chats(args: dict, **kwargs) -> str:
     del kwargs
-    return _result(
-        lambda: [row.to_dict() for row in WeChatDesktop().unread_chats(int(args.get("limit", 50)))]
-    )
+    return _result(lambda: [row.to_dict() for row in WeChatDesktop().unread_chats(int(args.get("limit", 50)))])
 
 
 def wechat_get_messages(args: dict, **kwargs) -> str:
     del kwargs
-    return _result(
-        lambda: WeChatDesktop().get_messages(
-            str(args.get("chat") or ""), int(args.get("limit", 20))
-        )
-    )
+    return _result(lambda: WeChatDesktop().get_messages(str(args.get("chat") or ""), int(args.get("limit", 20))))
 
 
 def wechat_send_message(args: dict, **kwargs) -> str:
     del kwargs
-    return _result(
-        lambda: WeChatDesktop().send_message(
-            str(args.get("chat") or ""),
-            str(args.get("text") or ""),
-            dry_run=bool(args.get("dry_run", False)),
-        )
-    )
+    return _result(lambda: WeChatDesktop().send_message(str(args.get("chat") or ""), str(args.get("text") or ""), dry_run=bool(args.get("dry_run", False))))
 
 
 def task_center_overview(args: dict, **kwargs) -> str:
     del kwargs
     profile = str(args.get("profile") or "").strip() or None
-    return _result(
-        lambda: TaskCenter().overview(profile, bool(args.get("include_completed", False)))
-    )
+    return _result(lambda: TaskCenter().overview(profile, bool(args.get("include_completed", False))))
 
 
 def task_center_upcoming(args: dict, **kwargs) -> str:
     del kwargs
     profile = str(args.get("profile") or "").strip() or None
-    return _result(
-        lambda: TaskCenter().upcoming(
-            hours=int(args.get("hours", 168)),
-            profile=profile,
-            limit=int(args.get("limit", 200)),
-        )
-    )
+    return _result(lambda: TaskCenter().upcoming(hours=int(args.get("hours", 168)), profile=profile, limit=int(args.get("limit", 200))))
 
 
 def task_center_create(args: dict, **kwargs) -> str:
@@ -132,20 +110,8 @@ def task_center_history(args: dict, **kwargs) -> str:
     task_id = str(args.get("id") or "")
     profile = str(args.get("profile") or "").strip() or None
     if task_type == "cron" and profile is None:
-        profile = (
-            str(
-                _resolve_cron_profile({"type": "cron", "id": task_id}).get("profile") or ""
-            ).strip()
-            or None
-        )
-    return _result(
-        lambda: TaskCenter().history(
-            task_type,
-            task_id,
-            limit=int(args.get("limit", 20)),
-            profile=profile,
-        )
-    )
+        profile = str(_resolve_cron_profile({"type": "cron", "id": task_id}).get("profile") or "").strip() or None
+    return _result(lambda: TaskCenter().history(task_type, task_id, limit=int(args.get("limit", 20)), profile=profile))
 
 
 def management_overview(args: dict, **kwargs) -> str:
@@ -193,20 +159,13 @@ def agent_action(args: dict, **kwargs) -> str:
         "use",
         "gateway_start",
         "gateway_stop",
-        "gateway_restart",
         "gateway_status",
         "set_workspace",
         "export",
     }
     if action not in allowed:
-        return _result(
-            lambda: (_ for _ in ()).throw(ValueError("unsupported autonomous agent action"))
-        )
-    return _result(
-        lambda: ManagementCenter().agent_action(
-            name, action, str(args.get("value") or "") or None
-        )
-    )
+        return _result(lambda: (_ for _ in ()).throw(ValueError("unsupported autonomous agent action")))
+    return _result(lambda: ManagementCenter().agent_action(name, action, str(args.get("value") or "") or None))
 
 
 def project_list(args: dict, **kwargs) -> str:
@@ -240,28 +199,20 @@ def project_get(args: dict, **kwargs) -> str:
     del kwargs
     if not _project_available():
         return _result(_unsupported_project_result)
-    return _result(
-        lambda: ManagementCenter().project_get(
-            str(args.get("project") or ""), str(args.get("profile") or "default")
-        )
-    )
+    return _result(lambda: ManagementCenter().project_get(str(args.get("project") or ""), str(args.get("profile") or "default")))
 
 
 def project_create(args: dict, **kwargs) -> str:
     del kwargs
     if not _project_available():
-        return _result(
-            lambda: (_ for _ in ()).throw(RuntimeError(project_unavailable_payload()["message"]))
-        )
+        return _result(lambda: (_ for _ in ()).throw(RuntimeError(project_unavailable_payload()["message"])))
     return _result(lambda: ManagementCenter().project_create(dict(args)))
 
 
 def project_update(args: dict, **kwargs) -> str:
     del kwargs
     if not _project_available():
-        return _result(
-            lambda: (_ for _ in ()).throw(RuntimeError(project_unavailable_payload()["message"]))
-        )
+        return _result(lambda: (_ for _ in ()).throw(RuntimeError(project_unavailable_payload()["message"])))
     payload = dict(args)
     project = str(payload.pop("project", ""))
     profile = str(payload.pop("profile", "default"))
@@ -271,9 +222,7 @@ def project_update(args: dict, **kwargs) -> str:
 def project_action(args: dict, **kwargs) -> str:
     del kwargs
     if not _project_available():
-        return _result(
-            lambda: (_ for _ in ()).throw(RuntimeError(project_unavailable_payload()["message"]))
-        )
+        return _result(lambda: (_ for _ in ()).throw(RuntimeError(project_unavailable_payload()["message"])))
     return _result(
         lambda: ManagementCenter().project_action(
             str(args.get("project") or ""),
