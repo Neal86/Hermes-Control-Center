@@ -1,7 +1,7 @@
 name: wechat-desktop
 label: WeChat Desktop
 kind: platform
-version: "0.5.5"
+version: "0.5.6"
 description: Native Windows WeChat desktop gateway adapter using UI Automation with fail-closed exact-target verification
 author: Neal86
 optional_env:
