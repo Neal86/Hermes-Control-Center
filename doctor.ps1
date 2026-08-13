@@ -6,7 +6,6 @@ param(
 
 $ErrorActionPreference = "Continue"
 Set-StrictMode -Version Latest
-
 if (-not $Preflight -and -not $Installed) { $Installed = $true }
 if ($Preflight -and $Installed) { throw "Choose either -Preflight or -Installed, not both." }
 
@@ -22,20 +21,31 @@ function Test-HermesCapability {
 function Find-HermesPython {
     param([object]$HermesCommand, [string]$HermesHome)
     $candidates = New-Object System.Collections.Generic.List[string]
-    foreach ($base in @($env:APPDATA, $env:LOCALAPPDATA)) {
-        if ($base) {
-            $candidates.Add((Join-Path $base "uv\tools\hermes-agent\Scripts\python.exe"))
-            $candidates.Add((Join-Path $base "hermes\hermes-agent\.venv\Scripts\python.exe"))
-            $candidates.Add((Join-Path $base "hermes\.venv\Scripts\python.exe"))
-        }
+    foreach ($candidate in @(
+        (Join-Path $HermesHome "hermes-agent\venv\Scripts\python.exe"),
+        (Join-Path $HermesHome "hermes-agent\.venv\Scripts\python.exe"),
+        (Join-Path $HermesHome "venv\Scripts\python.exe"),
+        (Join-Path $HermesHome ".venv\Scripts\python.exe")
+    )) { $candidates.Add($candidate) }
+    foreach ($base in @($env:LOCALAPPDATA, $env:APPDATA)) {
+        if (-not $base) { continue }
+        foreach ($relative in @(
+            "hermes\hermes-agent\venv\Scripts\python.exe",
+            "hermes\hermes-agent\.venv\Scripts\python.exe",
+            "hermes\venv\Scripts\python.exe",
+            "hermes\.venv\Scripts\python.exe",
+            "uv\tools\hermes-agent\Scripts\python.exe"
+        )) { $candidates.Add((Join-Path $base $relative)) }
     }
-    $candidates.Add((Join-Path $HermesHome "hermes-agent\.venv\Scripts\python.exe"))
-    $candidates.Add((Join-Path $HermesHome ".venv\Scripts\python.exe"))
     if ($HermesCommand) {
         try {
             $text = & $HermesCommand.Source --version 2>&1 | Out-String
             if ($text -match "(?m)^Project:\s*(.+?)\s*$") {
-                $site = [System.IO.DirectoryInfo]::new($Matches[1].Trim())
+                $project = $Matches[1].Trim()
+                foreach ($relative in @("venv\Scripts\python.exe", ".venv\Scripts\python.exe")) {
+                    $candidates.Insert(0, (Join-Path $project $relative))
+                }
+                $site = [System.IO.DirectoryInfo]::new($project)
                 if ($site.Name -ieq "site-packages" -and $site.Parent -and $site.Parent.Parent) {
                     $candidates.Insert(0, (Join-Path $site.Parent.Parent.FullName "Scripts\python.exe"))
                 }
@@ -59,7 +69,7 @@ function Find-HermesPython {
     return $null
 }
 
-$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { Join-Path $HOME ".hermes" }
+$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif (Test-Path (Join-Path $env:LOCALAPPDATA "hermes")) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
 $Hermes = Get-Command hermes -ErrorAction SilentlyContinue
 $HermesPython = Find-HermesPython -HermesCommand $Hermes -HermesHome $HermesHome
 $Report = [ordered]@{
@@ -77,21 +87,15 @@ if ($Hermes) {
     try { $Report["version"] = (& $Hermes.Source --version 2>&1 | Out-String).Trim() }
     catch { $Report["version"] = "unknown" }
 } else {
-    foreach ($name in @("plugins", "dashboard", "profile", "project", "cron", "kanban")) {
-        $Report["capability_$name"] = $false
-    }
+    foreach ($name in @("plugins", "dashboard", "profile", "project", "cron", "kanban")) { $Report["capability_$name"] = $false }
     $Report["version"] = "unavailable"
 }
 
 if ($HermesPython) {
-    try {
-        & $HermesPython -c "import yaml, croniter" 2>$null | Out-Null
-        $Report["shared_dependencies"] = $LASTEXITCODE -eq 0
-    } catch { $Report["shared_dependencies"] = $false }
-    try {
-        & $HermesPython -c "import pywinauto, pyperclip" 2>$null | Out-Null
-        $Report["wechat_dependencies"] = $LASTEXITCODE -eq 0
-    } catch { $Report["wechat_dependencies"] = $false }
+    try { & $HermesPython -c "import yaml, croniter" 2>$null | Out-Null; $Report["shared_dependencies"] = $LASTEXITCODE -eq 0 }
+    catch { $Report["shared_dependencies"] = $false }
+    try { & $HermesPython -c "import pywinauto, pyperclip" 2>$null | Out-Null; $Report["wechat_dependencies"] = $LASTEXITCODE -eq 0 }
+    catch { $Report["wechat_dependencies"] = $false }
 } else {
     $Report["shared_dependencies"] = $false
     $Report["wechat_dependencies"] = $false
@@ -104,16 +108,18 @@ if ($Installed) {
         plugin_manifest = "plugin.yaml"
         dashboard_manifest = "dashboard\manifest.json"
         dashboard_bundle = "dashboard\dist\index.js"
-        dashboard_api = "dashboard\plugin_api_extended.py"
+        dashboard_api = "dashboard\extended_api.py"
         management_overview = "management\overview.py"
         management_service = "management\service.py"
         task_service_v3 = "task_center\service_v3.py"
         provider_service = "providers\service.py"
+        resource_context = "resources\context.py"
         resource_discovery = "resources\discovery.py"
         resource_registry = "resources\registry.py"
         resource_bindings = "resources\bindings.py"
         resource_policy = "resources\policy.py"
-        resource_browser = "resources\browser.py"
+        resource_tools = "resources\tools.py"
+        resource_wechat_bound = "resources\wechat_bound.py"
         wechat_runtime = "wechat\runtime.py"
     }
     foreach ($entry in $InstalledFiles.GetEnumerator()) {
@@ -133,12 +139,6 @@ if ($Installed) {
         $Report["plugin_detected"] = $false
         $Report["wechat_plugin_detected"] = $false
     }
-    if ($Hermes -and $Report.capability_dashboard) {
-        try {
-            $dashboard = & $Hermes.Source dashboard --status 2>&1 | Out-String
-            $Report["dashboard_running"] = $dashboard -notmatch "No hermes dashboard processes running"
-        } catch { $Report["dashboard_running"] = $false }
-    } else { $Report["dashboard_running"] = $false }
 }
 
 $Warnings = New-Object System.Collections.Generic.List[string]
@@ -147,7 +147,7 @@ if (-not $Report.hermes_on_path) { $Errors.Add("Hermes executable is not on PATH
 if (-not $Report.python_found) { $Errors.Add("Hermes Python interpreter could not be located safely.") }
 if ($Report.hermes_on_path -and -not $Report.capability_profile) { $Errors.Add("Hermes profile capability is required.") }
 if ($Report.hermes_on_path -and -not $Report.capability_plugins) { $Errors.Add("Hermes plugin capability is required.") }
-if (-not $Report.capability_project) { $Warnings.Add("Native Projects are unavailable; Agents, Tasks, Providers, Resources, Dashboard and WeChat remain supported.") }
+if (-not $Report.capability_project) { $Warnings.Add("Native Projects are unavailable; the rest of Control Center remains supported.") }
 if (-not $Report.shared_dependencies) { $Warnings.Add("Shared plugin Python dependencies are not installed yet.") }
 if (-not $Report.wechat_dependencies) { $Warnings.Add("Windows WeChat Python dependencies are not installed yet.") }
 
@@ -155,8 +155,8 @@ if ($Installed) {
     foreach ($key in @(
         "plugin_manifest", "dashboard_manifest", "dashboard_bundle", "dashboard_api",
         "management_overview", "management_service", "task_service_v3", "provider_service",
-        "resource_discovery", "resource_registry", "resource_bindings", "resource_policy",
-        "resource_browser", "wechat_runtime", "wechat_platform"
+        "resource_context", "resource_discovery", "resource_registry", "resource_bindings",
+        "resource_policy", "resource_tools", "resource_wechat_bound", "wechat_runtime", "wechat_platform"
     )) {
         if (-not $Report[$key]) { $Errors.Add("Installed component missing: $key") }
     }
