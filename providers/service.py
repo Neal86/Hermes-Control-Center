@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 try:
     from hermes_constants import get_hermes_home
@@ -46,6 +49,8 @@ _PROVIDER_LABELS = {
     "opencode": "OpenCode",
 }
 
+_CUSTOM_SLUG_RE = re.compile(r"[^a-z0-9_-]+")
+
 
 def _default_hermes_home() -> Path:
     explicit = str(os.environ.get("HERMES_HOME") or "").strip()
@@ -64,8 +69,24 @@ def _default_hermes_home() -> Path:
     return Path.home() / ".hermes"
 
 
+def _provider_slug(name: str) -> str:
+    slug = _CUSTOM_SLUG_RE.sub("-", str(name or "").strip().lower()).strip("-_")
+    if not slug:
+        return ""
+    # Avoid ambiguous built-in/sentinel identities. Prefix only when needed so
+    # a natural name like APIPLANT remains the friendly runtime id `apiplant`.
+    if slug in {"auto", "custom", "none"} or slug in _PROVIDER_LABELS:
+        slug = f"custom-{slug}"
+    return slug[:96]
+
+
 class ProviderService:
-    """Profile-aware provider settings without exposing stored secrets."""
+    """Profile-aware provider settings without exposing stored secrets.
+
+    Built-in provider secrets live in the profile .env. A custom endpoint is
+    additionally mirrored into Hermes' canonical `providers:` config section,
+    using `key_env` so the key itself never needs to be written into config.yaml.
+    """
 
     def __init__(self, hermes_home: Path | None = None) -> None:
         self.hermes_home = (hermes_home or _default_hermes_home()).expanduser().resolve()
@@ -172,6 +193,72 @@ class ProviderService:
             except OSError:
                 pass
 
+    def _read_config(self, profile: str) -> dict[str, Any]:
+        path = self._profile_home(profile) / "config.yaml"
+        try:
+            value = yaml.safe_load(path.read_text("utf-8"))
+            return value if isinstance(value, dict) else {}
+        except (OSError, yaml.YAMLError):
+            return {}
+
+    def _write_config(self, profile: str, config: dict[str, Any]) -> None:
+        home = self._profile_home(profile)
+        home.mkdir(parents=True, exist_ok=True)
+        path = home / "config.yaml"
+        fd, tmp = tempfile.mkstemp(prefix="config.", suffix=".yaml.tmp", dir=str(home))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                yaml.safe_dump(config, handle, sort_keys=False, allow_unicode=True)
+            Path(tmp).replace(path)
+        finally:
+            try:
+                Path(tmp).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _sync_custom_runtime_provider(
+        self,
+        profile: str,
+        current: dict[str, Any],
+        previous_runtime_id: str = "",
+    ) -> str:
+        name = str(current.get("custom_name") or "").strip()
+        base_url = str(current.get("base_url") or "").strip()
+        model = str(current.get("default_model") or "").strip()
+        runtime_id = _provider_slug(name)
+        config = self._read_config(profile)
+        providers = config.get("providers")
+        if not isinstance(providers, dict):
+            providers = {}
+            config["providers"] = providers
+
+        old_id = str(previous_runtime_id or current.get("runtime_provider_id") or "").strip()
+        if old_id and old_id != runtime_id:
+            old_entry = providers.get(old_id)
+            if isinstance(old_entry, dict) and old_entry.get("key_env") == _PROVIDER_ENV["custom"]:
+                providers.pop(old_id, None)
+
+        if runtime_id and base_url:
+            existing = providers.get(runtime_id)
+            entry = dict(existing) if isinstance(existing, dict) else {}
+            entry.update({
+                "name": name or runtime_id,
+                "api": base_url,
+                "key_env": _PROVIDER_ENV["custom"],
+                "transport": "openai_chat",
+            })
+            if model:
+                entry["models"] = [model]
+            entry.setdefault("discover_models", True)
+            providers[runtime_id] = entry
+        elif old_id:
+            old_entry = providers.get(old_id)
+            if isinstance(old_entry, dict) and old_entry.get("key_env") == _PROVIDER_ENV["custom"]:
+                providers.pop(old_id, None)
+
+        self._write_config(profile, config)
+        return runtime_id
+
     def list(self, profile: str = "default") -> list[dict[str, Any]]:
         normalized_profile = str(profile or "default").strip().lower() or "default"
         home = self._profile_home(normalized_profile)
@@ -182,14 +269,24 @@ class ProviderService:
             provider = item["id"]
             env_key = item.get("env_key")
             stored = meta.get(provider, {}) if isinstance(meta, dict) else {}
-            label = str(stored.get("custom_name") or item["label"]) if provider == "custom" else item["label"]
+            custom_name = str(stored.get("custom_name") or "")
+            runtime_id = str(stored.get("runtime_provider_id") or _provider_slug(custom_name) or "") if provider == "custom" else provider
+            label = custom_name or item["label"] if provider == "custom" else item["label"]
+            has_key = bool(env_key and env.get(str(env_key)))
+            base_url = str(stored.get("base_url") or "")
+            configured = (
+                bool(runtime_id and base_url and has_key)
+                if provider == "custom"
+                else has_key or bool(stored.get("configured"))
+            )
             rows.append({
                 **item,
                 "label": label,
-                "custom_name": str(stored.get("custom_name") or ""),
-                "configured": bool(env_key and env.get(str(env_key))) or bool(stored.get("configured")),
-                "has_api_key": bool(env_key and env.get(str(env_key))),
-                "base_url": str(stored.get("base_url") or ""),
+                "custom_name": custom_name,
+                "runtime_provider_id": runtime_id,
+                "configured": configured,
+                "has_api_key": has_key,
+                "base_url": base_url,
                 "default_model": str(stored.get("default_model") or ""),
                 "oauth_status": str(stored.get("oauth_status") or "not_checked") if item["auth"] == "oauth" else None,
             })
@@ -218,11 +315,17 @@ class ProviderService:
         if not isinstance(current, dict):
             current = {}
             by_profile[provider] = current
+        previous_runtime_id = str(current.get("runtime_provider_id") or "")
         for key in ("base_url", "default_model"):
             if key in data:
                 current[key] = str(data.get(key) or "").strip()
         if provider == "custom" and "custom_name" in data:
             current["custom_name"] = str(data.get("custom_name") or "").strip()[:128]
+
+        if provider == "custom":
+            current["runtime_provider_id"] = self._sync_custom_runtime_provider(
+                profile, current, previous_runtime_id
+            )
         if provider in {"nous", "opencode"}:
             current["configured"] = bool(data.get("configured", current.get("configured", False)))
             current["oauth_status"] = str(data.get("oauth_status") or current.get("oauth_status") or "external_login_required")
