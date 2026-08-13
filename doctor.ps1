@@ -69,6 +69,22 @@ function Find-HermesPython {
     return $null
 }
 
+function Read-EnabledPlugins {
+    param([string]$PythonExe, [string]$Path)
+    if (-not $PythonExe -or -not (Test-Path -LiteralPath $Path)) { return @() }
+    try {
+        $lines = & $PythonExe -c "import sys,yaml; c=yaml.safe_load(open(sys.argv[1],encoding='utf-8')) or {}; v=((c.get('plugins') or {}).get('enabled') or []); [print(str(x)) for x in v if str(x).strip()]" $Path 2>$null
+        $items = New-Object System.Collections.Generic.List[string]
+        foreach ($line in @($lines)) {
+            $value = ([string]$line).Trim()
+            if ($value) { $items.Add($value) }
+        }
+        return @($items.ToArray())
+    } catch {
+        return @()
+    }
+}
+
 $HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA -and (Test-Path (Join-Path $env:LOCALAPPDATA "hermes"))) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
 $env:HERMES_HOME = $HermesHome
 $ConfigPath = Join-Path $HermesHome "config.yaml"
@@ -134,18 +150,10 @@ if ($Installed) {
     $Report["wechat_platform_adapter"] = Test-Path -LiteralPath (Join-Path $PlatformRoot "adapter.py")
     $Report["wechat_platform_legacy"] = Test-Path -LiteralPath (Join-Path $PlatformRoot "adapter_legacy.py")
 
-    $Report["plugin_enabled"] = $false
-    $Report["wechat_plugin_enabled"] = $false
-    $Report["plugins_enabled_entries"] = @()
-    if ($HermesPython -and (Test-Path -LiteralPath $ConfigPath)) {
-        try {
-            $enabledJson = & $HermesPython -c "import json,sys,yaml; p=sys.argv[1]; c=yaml.safe_load(open(p,encoding='utf-8')) or {}; print(json.dumps(((c.get('plugins') or {}).get('enabled') or [])))" $ConfigPath 2>$null | Select-Object -Last 1
-            $enabled = @($enabledJson | ConvertFrom-Json)
-            $Report["plugins_enabled_entries"] = @($enabled)
-            $Report["plugin_enabled"] = $enabled -contains "hermes-extensions"
-            $Report["wechat_plugin_enabled"] = $enabled -contains "wechat-desktop"
-        } catch {}
-    }
+    $enabled = @(Read-EnabledPlugins -PythonExe $HermesPython -Path $ConfigPath)
+    $Report["plugins_enabled_entries"] = if ($enabled.Count) { $enabled -join ", " } else { "" }
+    $Report["plugin_enabled"] = [bool]($enabled | Where-Object { $_ -eq "hermes-extensions" })
+    $Report["wechat_plugin_enabled"] = [bool]($enabled | Where-Object { $_ -eq "wechat-desktop" })
 
     try {
         $manifest = Get-Content -LiteralPath (Join-Path $PluginRoot "dashboard\manifest.json") -Raw -Encoding UTF8 | ConvertFrom-Json
