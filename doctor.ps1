@@ -42,29 +42,19 @@ function Find-HermesPython {
             $text = & $HermesCommand.Source --version 2>&1 | Out-String
             if ($text -match "(?m)^Project:\s*(.+?)\s*$") {
                 $project = $Matches[1].Trim()
-                foreach ($relative in @("venv\Scripts\python.exe", ".venv\Scripts\python.exe")) {
-                    $candidates.Insert(0, (Join-Path $project $relative))
-                }
+                foreach ($relative in @("venv\Scripts\python.exe", ".venv\Scripts\python.exe")) { $candidates.Insert(0, (Join-Path $project $relative)) }
                 $site = [System.IO.DirectoryInfo]::new($project)
-                if ($site.Name -ieq "site-packages" -and $site.Parent -and $site.Parent.Parent) {
-                    $candidates.Insert(0, (Join-Path $site.Parent.Parent.FullName "Scripts\python.exe"))
-                }
+                if ($site.Name -ieq "site-packages" -and $site.Parent -and $site.Parent.Parent) { $candidates.Insert(0, (Join-Path $site.Parent.Parent.FullName "Scripts\python.exe")) }
             }
         } catch {}
     }
     $uv = Get-Command uv -ErrorAction SilentlyContinue
     if ($uv) {
-        try {
-            $toolDir = (& $uv.Source tool dir 2>$null | Select-Object -First 1).Trim()
-            if ($toolDir) { $candidates.Insert(0, (Join-Path $toolDir "hermes-agent\Scripts\python.exe")) }
-        } catch {}
+        try { $toolDir = (& $uv.Source tool dir 2>$null | Select-Object -First 1).Trim(); if ($toolDir) { $candidates.Insert(0, (Join-Path $toolDir "hermes-agent\Scripts\python.exe")) } } catch {}
     }
     foreach ($candidate in $candidates | Select-Object -Unique) {
         if (-not (Test-Path -LiteralPath $candidate)) { continue }
-        try {
-            & $candidate -c "import sys; print(sys.executable)" 2>$null | Out-Null
-            if ($LASTEXITCODE -eq 0) { return $candidate }
-        } catch {}
+        try { & $candidate -c "import sys; print(sys.executable)" 2>$null | Out-Null; if ($LASTEXITCODE -eq 0) { return $candidate } } catch {}
     }
     return $null
 }
@@ -75,14 +65,9 @@ function Read-EnabledPlugins {
     try {
         $lines = & $PythonExe -c "import sys,yaml; c=yaml.safe_load(open(sys.argv[1],encoding='utf-8')) or {}; v=((c.get('plugins') or {}).get('enabled') or []); [print(str(x)) for x in v if str(x).strip()]" $Path 2>$null
         $items = New-Object System.Collections.Generic.List[string]
-        foreach ($line in @($lines)) {
-            $value = ([string]$line).Trim()
-            if ($value) { $items.Add($value) }
-        }
+        foreach ($line in @($lines)) { $value = ([string]$line).Trim(); if ($value) { $items.Add($value) } }
         return @($items.ToArray())
-    } catch {
-        return @()
-    }
+    } catch { return @() }
 }
 
 $HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA -and (Test-Path (Join-Path $env:LOCALAPPDATA "hermes"))) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
@@ -99,21 +84,16 @@ $Report = [ordered]@{
 }
 
 if ($Hermes) {
-    foreach ($name in @("plugins", "dashboard", "profile", "project", "cron", "kanban")) {
-        $Report["capability_$name"] = Test-HermesCapability -HermesExe $Hermes.Source -Command $name
-    }
-    try { $Report["version"] = (& $Hermes.Source --version 2>&1 | Out-String).Trim() }
-    catch { $Report["version"] = "unknown" }
+    foreach ($name in @("plugins", "dashboard", "profile", "project", "cron", "kanban")) { $Report["capability_$name"] = Test-HermesCapability -HermesExe $Hermes.Source -Command $name }
+    try { $Report["version"] = (& $Hermes.Source --version 2>&1 | Out-String).Trim() } catch { $Report["version"] = "unknown" }
 } else {
     foreach ($name in @("plugins", "dashboard", "profile", "project", "cron", "kanban")) { $Report["capability_$name"] = $false }
     $Report["version"] = "unavailable"
 }
 
 if ($HermesPython) {
-    try { & $HermesPython -c "import yaml, croniter" 2>$null | Out-Null; $Report["shared_dependencies"] = $LASTEXITCODE -eq 0 }
-    catch { $Report["shared_dependencies"] = $false }
-    try { & $HermesPython -c "import pywinauto, pyperclip" 2>$null | Out-Null; $Report["wechat_dependencies"] = $LASTEXITCODE -eq 0 }
-    catch { $Report["wechat_dependencies"] = $false }
+    try { & $HermesPython -c "import yaml, croniter" 2>$null | Out-Null; $Report["shared_dependencies"] = $LASTEXITCODE -eq 0 } catch { $Report["shared_dependencies"] = $false }
+    try { & $HermesPython -c "import pywinauto, pyperclip" 2>$null | Out-Null; $Report["wechat_dependencies"] = $LASTEXITCODE -eq 0 } catch { $Report["wechat_dependencies"] = $false }
 } else {
     $Report["shared_dependencies"] = $false
     $Report["wechat_dependencies"] = $false
@@ -127,8 +107,8 @@ if ($Installed) {
         plugin_entry = "__init__.py"
         dashboard_manifest = "dashboard\manifest.json"
         dashboard_bundle = "dashboard\dist\index.js"
-        dashboard_api_entry = "dashboard\plugin_api_entry.py"
-        dashboard_api_core = "dashboard\plugin_api.py"
+        dashboard_api_entry = "dashboard\plugin_api.py"
+        dashboard_api_core = "dashboard\plugin_api_core.py"
         dashboard_api_extra = "dashboard\extra_api.py"
         management_overview = "management\overview.py"
         management_service = "management\service.py"
@@ -143,9 +123,7 @@ if ($Installed) {
         resource_wechat_bound = "resources\wechat_bound.py"
         wechat_runtime = "wechat\runtime.py"
     }
-    foreach ($entry in $InstalledFiles.GetEnumerator()) {
-        $Report[$entry.Key] = Test-Path -LiteralPath (Join-Path $PluginRoot $entry.Value)
-    }
+    foreach ($entry in $InstalledFiles.GetEnumerator()) { $Report[$entry.Key] = Test-Path -LiteralPath (Join-Path $PluginRoot $entry.Value) }
     $Report["wechat_platform_manifest"] = Test-Path -LiteralPath (Join-Path $PlatformRoot "plugin.yaml")
     $Report["wechat_platform_adapter"] = Test-Path -LiteralPath (Join-Path $PlatformRoot "adapter.py")
     $Report["wechat_platform_legacy"] = Test-Path -LiteralPath (Join-Path $PlatformRoot "adapter_legacy.py")
@@ -183,11 +161,8 @@ if ($Installed) {
         "management_overview", "management_service", "task_service_v3", "provider_service",
         "resource_context", "resource_discovery", "resource_registry", "resource_bindings",
         "resource_policy", "resource_tools", "resource_wechat_bound", "wechat_runtime",
-        "wechat_platform_manifest", "wechat_platform_adapter", "wechat_platform_legacy",
-        "dashboard_manifest_api_exists"
-    )) {
-        if (-not $Report[$key]) { $Errors.Add("Installed component missing or invalid: $key") }
-    }
+        "wechat_platform_manifest", "wechat_platform_adapter", "wechat_platform_legacy", "dashboard_manifest_api_exists"
+    )) { if (-not $Report[$key]) { $Errors.Add("Installed component missing or invalid: $key") } }
     if (-not $Report.plugin_enabled) { $Errors.Add("hermes-extensions is not present in plugins.enabled in $ConfigPath.") }
     if (-not $Report.wechat_plugin_enabled) { $Errors.Add("wechat-desktop is not present in plugins.enabled in $ConfigPath.") }
 }
@@ -196,17 +171,13 @@ $Report["warnings"] = @($Warnings)
 $Report["errors"] = @($Errors)
 $Report["ok"] = $Errors.Count -eq 0
 
-if ($Json) {
-    $Report | ConvertTo-Json -Depth 6
-} else {
+if ($Json) { $Report | ConvertTo-Json -Depth 6 }
+else {
     Write-Host "Hermes Control Center doctor ($($Report.mode))"
     Write-Host "----------------------------------------"
-    $Report.GetEnumerator() | Where-Object { $_.Key -notin @("warnings", "errors") } | ForEach-Object {
-        Write-Host ("{0,-32} {1}" -f $_.Key, $_.Value)
-    }
+    $Report.GetEnumerator() | Where-Object { $_.Key -notin @("warnings", "errors") } | ForEach-Object { Write-Host ("{0,-32} {1}" -f $_.Key, $_.Value) }
     foreach ($message in $Warnings) { Write-Warning $message }
     foreach ($message in $Errors) { Write-Error $message }
 }
-
 if ($Errors.Count -gt 0) { exit 2 }
 exit 0
