@@ -13,6 +13,11 @@ if (-not (Test-Path -LiteralPath $Inner)) { throw "Missing Dashboard-Launch-v4.p
 
 # Windows PowerShell 5.1 does not support Invoke-WebRequest -SkipHttpErrorCheck.
 # Keep the v4 launcher logic unchanged while accepting that switch here.
+# Hermes v0.20+ protects plugin APIs with X-Hermes-Session-Token even on
+# loopback. The browser receives that token from the served HTML automatically.
+# For the launcher's readiness probe only, a 401 from the exact Control Center
+# capabilities route proves the route exists and is behind the expected auth
+# middleware, so surface it as an HTTP response instead of throwing.
 function Invoke-WebRequest {
     param(
         [Parameter(Mandatory=$true)][string]$Uri,
@@ -23,7 +28,21 @@ function Invoke-WebRequest {
     $args = @{ Uri = $Uri; ErrorAction = "Stop" }
     if ($UseBasicParsing) { $args.UseBasicParsing = $true }
     if ($TimeoutSec -gt 0) { $args.TimeoutSec = $TimeoutSec }
-    Microsoft.PowerShell.Utility\Invoke-WebRequest @args
+    try {
+        return Microsoft.PowerShell.Utility\Invoke-WebRequest @args
+    } catch [System.Net.WebException] {
+        $response = $_.Exception.Response
+        if ($response) {
+            $status = [int]$response.StatusCode
+            if ($status -eq 401 -and $Uri -match '/api/plugins/hermes-extensions/capabilities(?:\?|$)') {
+                return [pscustomobject]@{
+                    StatusCode = 401
+                    Content = '{"detail":"Unauthorized"}'
+                }
+            }
+        }
+        throw
+    }
 }
 
 Write-Host "Hermes home: $HermesHome"
