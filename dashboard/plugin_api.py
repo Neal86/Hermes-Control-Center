@@ -7,6 +7,9 @@ from pathlib import Path
 from fastapi import APIRouter
 
 DASHBOARD_ROOT = Path(__file__).resolve().parent
+PLUGIN_ROOT = DASHBOARD_ROOT.parent
+if str(PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT))
 
 
 def _load(path: Path, name: str):
@@ -25,6 +28,8 @@ def _load(path: Path, name: str):
 
 core = _load(DASHBOARD_ROOT / "plugin_api_core.py", "hermes_control_center_dashboard_core")
 extra = _load(DASHBOARD_ROOT / "extra_api.py", "hermes_control_center_dashboard_extra")
+from management import ManagementCenter as RoutedManagementCenter  # noqa: E402
+core.ManagementCenter = RoutedManagementCenter
 
 router = APIRouter()
 router.include_router(core.router)
