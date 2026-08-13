@@ -75,6 +75,16 @@ function Find-HermesPython {
         (Join-Path $HermesHome "venv\Scripts\python.exe"),
         (Join-Path $HermesHome ".venv\Scripts\python.exe")
     )) { if (Test-Path -LiteralPath $path) { return $path } }
+    $uv = Get-Command uv -ErrorAction SilentlyContinue
+    if ($uv) {
+        try {
+            $toolDir = (& $uv.Source tool dir 2>$null | Select-Object -First 1).Trim()
+            if ($toolDir) {
+                $candidate = Join-Path $toolDir "hermes-agent\Scripts\python.exe"
+                if (Test-Path -LiteralPath $candidate) { return $candidate }
+            }
+        } catch {}
+    }
     return $null
 }
 
@@ -89,13 +99,34 @@ function Normalize-PluginState {
     return [int]$proc.ExitCode
 }
 
+function Stop-DashboardAfterPluginUpdate {
+    $hermes = Get-Command hermes -ErrorAction SilentlyContinue
+    if (-not $hermes) { return 0 }
+    $out = Join-Path $LogDir "dashboard-stop.out.log"
+    $err = Join-Path $LogDir "dashboard-stop.err.log"
+    Remove-Item $out,$err -Force -ErrorAction SilentlyContinue
+    try {
+        $proc = Start-Process -FilePath $hermes.Source -ArgumentList @("dashboard","--stop") -Wait -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
+        Show-Log $out; Show-Log $err
+        if ($proc.ExitCode -ne 0) {
+            Write-Host "Dashboard stop returned exit code $($proc.ExitCode); continuing because no stale process may be running." -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "Dashboard restart preparation could not stop an existing process: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+    return 0
+}
+
 function Install-ControlCenter([switch]$Repair) {
     $code = Normalize-PluginState
     if ($code -ne 0) { return $code }
     $args = if ($Repair) { @("-Repair") } else { @() }
     $code = Run-PowerShellFile $SafeInstaller $args $(if ($Repair) { "control-center-safe-repair" } else { "control-center-safe-install" })
     if ($code -ne 0) { return $code }
-    return Normalize-PluginState
+    $code = Normalize-PluginState
+    if ($code -ne 0) { return $code }
+    [void](Stop-DashboardAfterPluginUpdate)
+    return 0
 }
 
 function Show-Menu {
