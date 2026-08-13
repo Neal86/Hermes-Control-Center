@@ -50,7 +50,7 @@ function Show-Log([string]$Path) {
     if (Test-Path -LiteralPath $Path) { Get-Content -LiteralPath $Path -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ([string]$_) } }
 }
 function Run-PowerShellFile {
-    param([string]$Path, [string[]]$Arguments, [string]$LogName)
+    param([string]$Path,[string[]]$Arguments,[string]$LogName)
     if (-not (Test-Path -LiteralPath $Path)) { Write-Host "Missing script: $Path" -ForegroundColor Red; return 2 }
     $out = Join-Path $LogDir ($LogName + ".out.log")
     $err = Join-Path $LogDir ($LogName + ".err.log")
@@ -121,17 +121,31 @@ function Stop-DashboardAfterPluginUpdate {
     } catch { Write-Host "Dashboard stop failed: $($_.Exception.Message)" -ForegroundColor Yellow }
     return 0
 }
+function Restore-Config([string]$Backup,[bool]$OriginallyExisted) {
+    if ($OriginallyExisted -and (Test-Path -LiteralPath $Backup)) {
+        Copy-Item -LiteralPath $Backup -Destination $ConfigPath -Force
+    } elseif (-not $OriginallyExisted -and (Test-Path -LiteralPath $ConfigPath)) {
+        Remove-Item -LiteralPath $ConfigPath -Force -ErrorAction SilentlyContinue
+    }
+}
 function Install-ControlCenter([switch]$Repair) {
     if (-not (Test-PackageComplete)) { return 3 }
-    $code = Normalize-PluginState -Mode "prepare"
-    if ($code -ne 0) { return $code }
-    $args = if ($Repair) { @("-Repair") } else { @() }
-    $code = Run-PowerShellFile $SafeInstaller $args $(if ($Repair) { "control-center-safe-repair" } else { "control-center-safe-install" })
-    if ($code -ne 0) { return $code }
-    $code = Normalize-PluginState -Mode "finalize"
-    if ($code -ne 0) { return $code }
-    [void](Stop-DashboardAfterPluginUpdate)
-    return 0
+    $backup = Join-Path $env:TEMP ("hermes-control-center-config-" + [Guid]::NewGuid().ToString("N") + ".yaml")
+    $configExisted = Test-Path -LiteralPath $ConfigPath
+    if ($configExisted) { Copy-Item -LiteralPath $ConfigPath -Destination $backup -Force }
+    try {
+        $code = Normalize-PluginState -Mode "prepare"
+        if ($code -ne 0) { Restore-Config $backup $configExisted; return $code }
+        $args = if ($Repair) { @("-Repair") } else { @() }
+        $code = Run-PowerShellFile $SafeInstaller $args $(if ($Repair) { "control-center-safe-repair" } else { "control-center-safe-install" })
+        if ($code -ne 0) { Restore-Config $backup $configExisted; return $code }
+        $code = Normalize-PluginState -Mode "finalize"
+        if ($code -ne 0) { Restore-Config $backup $configExisted; return $code }
+        [void](Stop-DashboardAfterPluginUpdate)
+        return 0
+    } finally {
+        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+    }
 }
 function Show-Menu {
     Clear-Host
