@@ -31,6 +31,11 @@ _PROVIDER_ENV = {
     "custom": "HERMES_CUSTOM_PROVIDER_API_KEY",
 }
 
+_PROVIDER_BASE_URL_ENV = {
+    "openai-api": "OPENAI_BASE_URL",
+    "openrouter": "OPENROUTER_BASE_URL",
+}
+
 _PROVIDER_LABELS = {
     "openai-api": "OpenAI API (direct)",
     "openrouter": "OpenRouter",
@@ -50,6 +55,7 @@ _PROVIDER_LABELS = {
 }
 
 _CUSTOM_SLUG_RE = re.compile(r"[^a-z0-9_-]+")
+_PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 def _default_hermes_home() -> Path:
@@ -79,12 +85,7 @@ def _provider_slug(name: str) -> str:
 
 
 class ProviderService:
-    """Profile-aware provider settings without exposing stored secrets.
-
-    Built-in provider secrets live in the profile .env. A custom endpoint is
-    mirrored into Hermes' canonical ``providers:`` config section and uses
-    ``key_env`` so the secret itself never needs to be written into config.yaml.
-    """
+    """Profile-aware provider settings without exposing stored secrets."""
 
     def __init__(self, hermes_home: Path | None = None) -> None:
         self.hermes_home = (hermes_home or _default_hermes_home()).expanduser().resolve()
@@ -96,7 +97,7 @@ class ProviderService:
         name = str(profile or "default").strip().lower() or "default"
         if name == "default":
             return self.hermes_home
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", name):
+        if not _PROFILE_RE.fullmatch(name):
             raise ValueError("invalid profile")
         profiles_root = (self.hermes_home / "profiles").resolve()
         home = (profiles_root / name).resolve()
@@ -114,7 +115,7 @@ class ProviderService:
                 "runtime_provider_id": provider if provider != "custom" else "",
                 "label": label,
                 "auth": "oauth" if provider == "nous" else "api_key",
-                "supports_base_url": provider in {"openai-api", "openrouter", "custom"},
+                "supports_base_url": provider in set(_PROVIDER_BASE_URL_ENV) | {"custom"},
                 "supports_custom_name": provider == "custom",
                 "env_key": _PROVIDER_ENV.get(provider),
             })
@@ -227,6 +228,8 @@ class ProviderService:
         base_url = str(current.get("base_url") or "").strip()
         model = str(current.get("default_model") or "").strip()
         runtime_id = _provider_slug(name)
+        env = self._parse_env(self._profile_home(profile, require_exists=True) / ".env")
+        has_key = bool(env.get(_PROVIDER_ENV["custom"]))
         config = self._read_config(profile)
         providers = config.get("providers")
         if not isinstance(providers, dict):
@@ -236,7 +239,7 @@ class ProviderService:
         old_id = str(previous_runtime_id or current.get("runtime_provider_id") or "").strip()
         if old_id and old_id != runtime_id:
             old_entry = providers.get(old_id)
-            if isinstance(old_entry, dict) and old_entry.get("key_env") == _PROVIDER_ENV["custom"]:
+            if isinstance(old_entry, dict) and old_entry.get("managed_by") == "hermes-control-center":
                 providers.pop(old_id, None)
 
         if runtime_id and base_url:
@@ -245,18 +248,22 @@ class ProviderService:
             entry.update({
                 "name": name or runtime_id,
                 "api": base_url,
-                "key_env": _PROVIDER_ENV["custom"],
                 "transport": "openai_chat",
+                "managed_by": "hermes-control-center",
             })
+            if has_key:
+                entry["key_env"] = _PROVIDER_ENV["custom"]
+            else:
+                entry.pop("key_env", None)
             if model:
                 entry["models"] = [model]
-            elif "models" in entry:
+            else:
                 entry.pop("models", None)
             entry.setdefault("discover_models", True)
             providers[runtime_id] = entry
         elif old_id:
             old_entry = providers.get(old_id)
-            if isinstance(old_entry, dict) and old_entry.get("key_env") == _PROVIDER_ENV["custom"]:
+            if isinstance(old_entry, dict) and old_entry.get("managed_by") == "hermes-control-center":
                 providers.pop(old_id, None)
 
         self._write_config(profile, config)
@@ -280,9 +287,10 @@ class ProviderService:
             )
             label = (custom_name or item["label"]) if provider == "custom" else item["label"]
             has_key = bool(env_key and env.get(str(env_key)))
-            base_url = str(stored.get("base_url") or "")
+            base_env = _PROVIDER_BASE_URL_ENV.get(provider)
+            base_url = str(env.get(base_env) or stored.get("base_url") or "") if base_env else str(stored.get("base_url") or "")
             configured = (
-                bool(runtime_id and base_url and has_key)
+                bool(runtime_id and base_url)
                 if provider == "custom"
                 else has_key or bool(stored.get("configured"))
             )
@@ -329,6 +337,11 @@ class ProviderService:
                 current[key] = str(data.get(key) or "").strip()
         if provider == "custom" and "custom_name" in data:
             current["custom_name"] = str(data.get("custom_name") or "").strip()[:128]
+
+        base_env = _PROVIDER_BASE_URL_ENV.get(provider)
+        if base_env and "base_url" in data:
+            value = str(data.get("base_url") or "").strip()
+            self._update_env(profile, {base_env: value or None})
 
         if provider == "custom":
             current["runtime_provider_id"] = self._sync_custom_runtime_provider(profile, current, previous_runtime_id)
