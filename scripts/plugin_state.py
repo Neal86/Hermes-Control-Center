@@ -7,7 +7,8 @@ from pathlib import Path
 
 import yaml
 
-TARGETS = ("hermes-extensions", "wechat-desktop")
+PRIMARY = "hermes-extensions"
+LEGACY = "wechat-desktop"
 
 
 def _clean_list(value):
@@ -22,6 +23,8 @@ def _clean_list(value):
         if ".hermes-control-center-txn-" in low:
             continue
         if "backup-hermes-extensions" in low or "backup-wechat-desktop" in low:
+            continue
+        if name == LEGACY:
             continue
         if name not in out:
             out.append(name)
@@ -52,12 +55,11 @@ def normalize(config_path: Path, mode: str = "finalize") -> None:
 
     enabled = _clean_list(plugins.get("enabled"))
     disabled = _clean_list(plugins.get("disabled"))
-    disabled = [item for item in disabled if item not in TARGETS]
+    disabled = [item for item in disabled if item not in {PRIMARY, LEGACY}]
 
     if mode == "finalize":
-        for name in TARGETS:
-            if name not in enabled:
-                enabled.append(name)
+        if PRIMARY not in enabled:
+            enabled.append(PRIMARY)
     elif mode != "prepare":
         raise ValueError("mode must be prepare or finalize")
 
@@ -67,11 +69,12 @@ def normalize(config_path: Path, mode: str = "finalize") -> None:
 
     verify = yaml.safe_load(config_path.read_text("utf-8")) or {}
     state = verify.get("plugins") or {}
-    for name in TARGETS:
-        if name in (state.get("disabled") or []):
-            raise RuntimeError(f"still present in plugins.disabled: {name}")
-        if mode == "finalize" and name not in (state.get("enabled") or []):
-            raise RuntimeError(f"missing from plugins.enabled: {name}")
+    if PRIMARY in (state.get("disabled") or []):
+        raise RuntimeError(f"still present in plugins.disabled: {PRIMARY}")
+    if LEGACY in (state.get("enabled") or []) or LEGACY in (state.get("disabled") or []):
+        raise RuntimeError(f"legacy standalone plugin entry still present: {LEGACY}")
+    if mode == "finalize" and PRIMARY not in (state.get("enabled") or []):
+        raise RuntimeError(f"missing from plugins.enabled: {PRIMARY}")
 
 
 if __name__ == "__main__":
@@ -79,4 +82,4 @@ if __name__ == "__main__":
         raise SystemExit("usage: plugin_state.py <config.yaml> [prepare|finalize]")
     mode = sys.argv[2] if len(sys.argv) == 3 else "finalize"
     normalize(Path(sys.argv[1]).expanduser().resolve(), mode)
-    print(f"Plugin state {mode} complete: hermes-extensions, wechat-desktop")
+    print(f"Plugin state {mode} complete: {PRIMARY}; removed legacy {LEGACY}")
