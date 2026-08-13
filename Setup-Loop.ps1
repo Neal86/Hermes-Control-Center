@@ -86,8 +86,14 @@ function Invoke-SetupAction {
     Write-Host ""
     Write-Host ("Running: " + $Action) -ForegroundColor Cyan
     Write-Host "------------------------------------------------------------"
-    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Action $Action
-    return $LASTEXITCODE
+
+    # Send child output directly to the console instead of returning it from this
+    # function. Otherwise PowerShell collects every output line together with the
+    # integer return value, and the caller mistakenly treats the text as an exit code.
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Action $Action 2>&1 | Out-Host
+    $exitCode = $LASTEXITCODE
+    if ($null -eq $exitCode) { $exitCode = 1 }
+    return [int]$exitCode
 }
 
 while ($true) {
@@ -115,7 +121,7 @@ while ($true) {
     $code = Invoke-SetupAction $action
     Write-Host ""
     if ($code -eq 0) {
-        Write-Host "Operation finished." -ForegroundColor Green
+        Write-Host "Operation finished successfully." -ForegroundColor Green
     } else {
         Write-Host "Operation failed with exit code $code." -ForegroundColor Red
         Write-Host "The Setup menu will remain open." -ForegroundColor Yellow
