@@ -47,6 +47,7 @@ function Same-Version([string]$A, [string]$B) {
     try { return ([version](($A -split '[-+]',2)[0])) -eq ([version](($B -split '[-+]',2)[0])) } catch { return $A -eq $B }
 }
 function Show-Log([string]$Path) {
+    if ($env:HCC_LIVE_LOG_TAIL -eq "1") { return }
     if (Test-Path -LiteralPath $Path) { Get-Content -LiteralPath $Path -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ([string]$_) } }
 }
 function Quote-ProcessArgument([string]$Value) {
