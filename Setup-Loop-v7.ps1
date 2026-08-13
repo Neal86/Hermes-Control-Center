@@ -49,14 +49,20 @@ function Same-Version([string]$A, [string]$B) {
 function Show-Log([string]$Path) {
     if (Test-Path -LiteralPath $Path) { Get-Content -LiteralPath $Path -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ([string]$_) } }
 }
+function Quote-ProcessArgument([string]$Value) {
+    if ($null -eq $Value) { return '""' }
+    return '"' + ($Value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
+}
 function Run-PowerShellFile {
     param([string]$Path,[string[]]$Arguments,[string]$LogName)
-    if (-not (Test-Path -LiteralPath $Path)) { Write-Host "Missing script: $Path" -ForegroundColor Red; return 2 }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { Write-Host "Missing script: $Path" -ForegroundColor Red; return 2 }
+    if ([System.IO.Path]::GetExtension($Path) -ine ".ps1") { Write-Host "Invalid PowerShell script path: $Path" -ForegroundColor Red; return 2 }
     $out = Join-Path $LogDir ($LogName + ".out.log")
     $err = Join-Path $LogDir ($LogName + ".err.log")
     Remove-Item $out,$err -Force -ErrorAction SilentlyContinue
-    $args = @("-NoLogo","-NoProfile","-ExecutionPolicy","Bypass","-File",$Path) + $Arguments
-    $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $args -Wait -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
+    $processArgs = @("-NoLogo","-NoProfile","-ExecutionPolicy","Bypass","-File",(Quote-ProcessArgument $Path))
+    foreach ($argument in $Arguments) { $processArgs += (Quote-ProcessArgument ([string]$argument)) }
+    $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $processArgs -Wait -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
     Show-Log $out; Show-Log $err
     return [int]$proc.ExitCode
 }
@@ -136,8 +142,8 @@ function Install-ControlCenter([switch]$Repair) {
     try {
         $code = Normalize-PluginState -Mode "prepare"
         if ($code -ne 0) { Restore-Config $backup $configExisted; return $code }
-        $args = if ($Repair) { @("-Repair") } else { @() }
-        $code = Run-PowerShellFile $SafeInstaller $args $(if ($Repair) { "control-center-safe-repair" } else { "control-center-safe-install" })
+        $installerArgs = if ($Repair) { @("-Repair") } else { @() }
+        $code = Run-PowerShellFile $SafeInstaller $installerArgs $(if ($Repair) { "control-center-safe-repair" } else { "control-center-safe-install" })
         if ($code -ne 0) { Restore-Config $backup $configExisted; return $code }
         $code = Normalize-PluginState -Mode "finalize"
         if ($code -ne 0) { Restore-Config $backup $configExisted; return $code }
