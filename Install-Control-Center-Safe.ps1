@@ -68,6 +68,25 @@ function Find-HermesPython {
     return $null
 }
 
+function Read-ControlCenterVersion {
+    $path = Join-Path $Root "plugin.yaml"
+    $text = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    if ($text -match '(?m)^version:\s*["'']?([^\s"'']+)["'']?\s*$') { return $Matches[1].Trim() }
+    throw "Could not read Control Center version from plugin.yaml"
+}
+
+function Sync-InstalledDashboardManifest {
+    param([string]$Version)
+    $manifestPath = Join-Path $HermesHome "plugins\hermes-extensions\dashboard\manifest.json"
+    if (-not (Test-Path -LiteralPath $manifestPath)) { throw "Installed dashboard manifest is missing: $manifestPath" }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $manifest.version = $Version
+    $manifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    $verify = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$verify.version -ne $Version) { throw "Installed dashboard manifest version sync failed." }
+    Write-Host "Dashboard manifest synced to v$Version." -ForegroundColor Cyan
+}
+
 $HermesCommand = Get-Command hermes -ErrorAction SilentlyContinue
 if (-not $HermesCommand) { throw "Hermes is not installed or is not on PATH." }
 if (-not (Test-Path -LiteralPath $InnerInstaller)) { throw "Missing install.ps1" }
@@ -103,6 +122,9 @@ Write-Host "Installing Hermes Control Center..."
 $installerArgs = @("-NoLogo","-NoProfile","-ExecutionPolicy","Bypass","-File",$InnerInstaller,"-SkipDependencies")
 $code = Run-Native -FilePath "powershell.exe" -Arguments $installerArgs -Label "Installing plugin files and configuration" -LogPrefix "plugin-install" -WorkingDirectory $Root
 if ($code -ne 0) { throw "Control Center installer failed with exit code $code. See logs under $LogDir." }
+
+$version = Read-ControlCenterVersion
+Sync-InstalledDashboardManifest -Version $version
 
 Write-Host "Hermes Control Center installation completed successfully." -ForegroundColor Green
 Write-Host "Dashboard was stopped during upgrade. Use 'Open Hermes Dashboard' to start a fresh process with the new plugin." -ForegroundColor Green
