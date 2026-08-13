@@ -15,38 +15,38 @@ except Exception:
     get_hermes_home = None
 
 _PROVIDER_ENV = {
-    "openai": "OPENAI_API_KEY",
+    "openai-api": "OPENAI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
-    "claude": "ANTHROPIC_API_KEY",
-    "google": "GEMINI_API_KEY",
-    "gemini": "GEMINI_API_KEY",
+    "gemini": "GOOGLE_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
     "xai": "XAI_API_KEY",
     "groq": "GROQ_API_KEY",
     "together": "TOGETHER_API_KEY",
     "mistral": "MISTRAL_API_KEY",
-    "moonshot": "MOONSHOT_API_KEY",
-    "kimi": "MOONSHOT_API_KEY",
+    "kimi-coding": "KIMI_API_KEY",
     "minimax": "MINIMAX_API_KEY",
+    "opencode-zen": "OPENCODE_ZEN_API_KEY",
+    "opencode-go": "OPENCODE_GO_API_KEY",
     "custom": "HERMES_CUSTOM_PROVIDER_API_KEY",
 }
 
 _PROVIDER_LABELS = {
-    "openai": "OpenAI",
+    "openai-api": "OpenAI API (direct)",
     "openrouter": "OpenRouter",
     "anthropic": "Anthropic / Claude",
-    "google": "Google Gemini",
+    "gemini": "Google Gemini",
     "deepseek": "DeepSeek",
     "xai": "xAI Grok",
     "groq": "Groq",
     "together": "Together AI",
     "mistral": "Mistral",
-    "moonshot": "Kimi / Moonshot",
+    "kimi-coding": "Kimi / Moonshot",
     "minimax": "MiniMax",
+    "opencode-zen": "OpenCode Zen",
+    "opencode-go": "OpenCode Go",
     "custom": "Custom OpenAI-compatible Provider",
     "nous": "Nous Portal OAuth",
-    "opencode": "OpenCode",
 }
 
 _CUSTOM_SLUG_RE = re.compile(r"[^a-z0-9_-]+")
@@ -73,8 +73,6 @@ def _provider_slug(name: str) -> str:
     slug = _CUSTOM_SLUG_RE.sub("-", str(name or "").strip().lower()).strip("-_")
     if not slug:
         return ""
-    # Avoid ambiguous built-in/sentinel identities. Prefix only when needed so
-    # a natural name like APIPLANT remains the friendly runtime id `apiplant`.
     if slug in {"auto", "custom", "none"} or slug in _PROVIDER_LABELS:
         slug = f"custom-{slug}"
     return slug[:96]
@@ -84,8 +82,8 @@ class ProviderService:
     """Profile-aware provider settings without exposing stored secrets.
 
     Built-in provider secrets live in the profile .env. A custom endpoint is
-    additionally mirrored into Hermes' canonical `providers:` config section,
-    using `key_env` so the key itself never needs to be written into config.yaml.
+    mirrored into Hermes' canonical ``providers:`` config section and uses
+    ``key_env`` so the secret itself never needs to be written into config.yaml.
     """
 
     def __init__(self, hermes_home: Path | None = None) -> None:
@@ -94,14 +92,18 @@ class ProviderService:
         self.data_root.mkdir(parents=True, exist_ok=True)
         self.path = self.data_root / "providers.json"
 
-    def _profile_home(self, profile: str) -> Path:
-        name = str(profile or "default").strip().lower()
-        if not name or name == "default":
+    def _profile_home(self, profile: str, *, require_exists: bool = False) -> Path:
+        name = str(profile or "default").strip().lower() or "default"
+        if name == "default":
             return self.hermes_home
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", name):
+            raise ValueError("invalid profile")
         profiles_root = (self.hermes_home / "profiles").resolve()
         home = (profiles_root / name).resolve()
         if home.parent != profiles_root:
             raise ValueError("invalid profile")
+        if require_exists and not home.is_dir():
+            raise ValueError(f"unknown Hermes profile: {name}")
         return home
 
     def catalog(self) -> list[dict[str, Any]]:
@@ -109,9 +111,10 @@ class ProviderService:
         for provider, label in _PROVIDER_LABELS.items():
             rows.append({
                 "id": provider,
+                "runtime_provider_id": provider if provider != "custom" else "",
                 "label": label,
-                "auth": "oauth" if provider in {"nous", "opencode"} else "api_key",
-                "supports_base_url": provider in {"openai", "openrouter", "custom"},
+                "auth": "oauth" if provider == "nous" else "api_key",
+                "supports_base_url": provider in {"openai-api", "openrouter", "custom"},
                 "supports_custom_name": provider == "custom",
                 "env_key": _PROVIDER_ENV.get(provider),
             })
@@ -157,8 +160,7 @@ class ProviderService:
         return json.dumps(str(value), ensure_ascii=False)
 
     def _update_env(self, profile: str, updates: dict[str, str | None]) -> None:
-        home = self._profile_home(profile)
-        home.mkdir(parents=True, exist_ok=True)
+        home = self._profile_home(profile, require_exists=True)
         path = home / ".env"
         try:
             current_lines = path.read_text("utf-8").splitlines()
@@ -194,7 +196,7 @@ class ProviderService:
                 pass
 
     def _read_config(self, profile: str) -> dict[str, Any]:
-        path = self._profile_home(profile) / "config.yaml"
+        path = self._profile_home(profile, require_exists=True) / "config.yaml"
         try:
             value = yaml.safe_load(path.read_text("utf-8"))
             return value if isinstance(value, dict) else {}
@@ -202,8 +204,7 @@ class ProviderService:
             return {}
 
     def _write_config(self, profile: str, config: dict[str, Any]) -> None:
-        home = self._profile_home(profile)
-        home.mkdir(parents=True, exist_ok=True)
+        home = self._profile_home(profile, require_exists=True)
         path = home / "config.yaml"
         fd, tmp = tempfile.mkstemp(prefix="config.", suffix=".yaml.tmp", dir=str(home))
         try:
@@ -249,6 +250,8 @@ class ProviderService:
             })
             if model:
                 entry["models"] = [model]
+            elif "models" in entry:
+                entry.pop("models", None)
             entry.setdefault("discover_models", True)
             providers[runtime_id] = entry
         elif old_id:
@@ -261,7 +264,7 @@ class ProviderService:
 
     def list(self, profile: str = "default") -> list[dict[str, Any]]:
         normalized_profile = str(profile or "default").strip().lower() or "default"
-        home = self._profile_home(normalized_profile)
+        home = self._profile_home(normalized_profile, require_exists=True)
         env = self._parse_env(home / ".env")
         meta = self._read_meta().get(normalized_profile, {})
         rows = []
@@ -270,8 +273,12 @@ class ProviderService:
             env_key = item.get("env_key")
             stored = meta.get(provider, {}) if isinstance(meta, dict) else {}
             custom_name = str(stored.get("custom_name") or "")
-            runtime_id = str(stored.get("runtime_provider_id") or _provider_slug(custom_name) or "") if provider == "custom" else provider
-            label = custom_name or item["label"] if provider == "custom" else item["label"]
+            runtime_id = (
+                str(stored.get("runtime_provider_id") or _provider_slug(custom_name) or "")
+                if provider == "custom"
+                else provider
+            )
+            label = (custom_name or item["label"]) if provider == "custom" else item["label"]
             has_key = bool(env_key and env.get(str(env_key)))
             base_url = str(stored.get("base_url") or "")
             configured = (
@@ -297,6 +304,7 @@ class ProviderService:
         if provider not in _PROVIDER_LABELS:
             raise ValueError("unsupported provider")
         profile = str(profile or "default").strip().lower() or "default"
+        self._profile_home(profile, require_exists=True)
         env_key = _PROVIDER_ENV.get(provider)
         api_key = data.get("api_key")
         clear_key = bool(data.get("clear_api_key"))
@@ -323,14 +331,12 @@ class ProviderService:
             current["custom_name"] = str(data.get("custom_name") or "").strip()[:128]
 
         if provider == "custom":
-            current["runtime_provider_id"] = self._sync_custom_runtime_provider(
-                profile, current, previous_runtime_id
-            )
-        if provider in {"nous", "opencode"}:
+            current["runtime_provider_id"] = self._sync_custom_runtime_provider(profile, current, previous_runtime_id)
+        if provider == "nous":
             current["configured"] = bool(data.get("configured", current.get("configured", False)))
             current["oauth_status"] = str(data.get("oauth_status") or current.get("oauth_status") or "external_login_required")
         elif env_key:
-            current["configured"] = bool(self._parse_env(self._profile_home(profile) / ".env").get(env_key))
+            current["configured"] = bool(self._parse_env(self._profile_home(profile, require_exists=True) / ".env").get(env_key))
         else:
             current["configured"] = bool(current.get("base_url"))
         self._write_meta(payload)
