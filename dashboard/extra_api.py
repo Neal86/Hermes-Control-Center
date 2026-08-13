@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ipaddress
 import json
+import socket
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -43,8 +46,8 @@ class ProviderBody(StrictBody):
 
 
 class DiscoverModelsBody(StrictBody):
-    base_url: str = Field(min_length=1, max_length=4096)
-    api_key: str | None = Field(default=None, max_length=8192)
+    provider: str = Field(min_length=1, max_length=128)
+    profile: str = Field(default="default", min_length=1, max_length=64)
 
 
 class WeChatBoundDryRunBody(StrictBody):
@@ -94,25 +97,38 @@ def _models_from_payload(payload: Any) -> list[str]:
     return sorted(models, key=str.lower)[:512]
 
 
-def _discover_models(base_url: str, api_key: str | None) -> list[str]:
+def _validate_public_https_url(base_url: str) -> str:
     root = str(base_url or "").strip().rstrip("/")
-    if not root.startswith(("http://", "https://")):
-        raise ValueError("Base URL must start with http:// or https://")
+    parsed = urllib.parse.urlparse(root)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("Model discovery requires a public HTTPS Base URL")
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise ValueError(f"Could not resolve provider hostname: {exc}") from exc
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0])
+        if address.is_private or address.is_loopback or address.is_link_local or address.is_multicast or address.is_reserved or address.is_unspecified:
+            raise ValueError("Model discovery cannot access private or local network addresses")
+    return root
+
+
+def _discover_models(base_url: str, credential: str | None) -> list[str]:
+    root = _validate_public_https_url(base_url)
     endpoint = root if root.lower().endswith("/models") else root + "/models"
     headers = {"Accept": "application/json", "User-Agent": "Hermes-Control-Center/0.5.13"}
-    if api_key and str(api_key).strip():
-        headers["Authorization"] = "Bearer " + str(api_key).strip()
+    if credential and str(credential).strip():
+        headers["Authorization"] = "Bearer " + str(credential).strip()
     req = urllib.request.Request(endpoint, headers=headers, method="GET")
+    opener = urllib.request.build_opener(urllib.request.HTTPHandler(), urllib.request.HTTPSHandler())
     try:
-        with urllib.request.urlopen(req, timeout=20) as response:
+        with opener.open(req, timeout=20) as response:
+            final_url = response.geturl()
+            if urllib.parse.urlparse(final_url).hostname != urllib.parse.urlparse(endpoint).hostname:
+                raise ValueError("Provider model endpoint redirected to a different hostname")
             raw = response.read(4 * 1024 * 1024)
     except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read(4096).decode("utf-8", errors="replace")
-        except Exception:
-            pass
-        raise ValueError(f"Provider model endpoint returned HTTP {exc.code}" + (f": {detail}" if detail else "")) from exc
+        raise ValueError(f"Provider model endpoint returned HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
         raise ValueError(f"Could not reach provider model endpoint: {exc.reason}") from exc
     try:
@@ -168,6 +184,22 @@ def _save_models(service: ProviderService, profile: str, provider: str, models: 
         entry.pop("default_model", None)
     providers[runtime_provider_id] = entry
     service._write_config(profile, config)
+
+
+def _provider_runtime_details(service: ProviderService, profile: str, provider: str) -> tuple[str, str | None]:
+    rows = service.list(profile)
+    row = next((item for item in rows if str(item.get("id")) == provider), None)
+    if row is None:
+        raise ValueError("unknown provider")
+    base_url = str(row.get("base_url") or "").strip()
+    if not base_url:
+        raise ValueError("Provider Base URL is not configured")
+    env_key = str(row.get("env_key") or "").strip()
+    credential = None
+    if env_key:
+        home = service._profile_home(profile, require_exists=True)
+        credential = service._parse_env(home / ".env").get(env_key)
+    return base_url, credential
 
 
 @router.get("/resources")
@@ -261,7 +293,11 @@ def providers(profile: str = "default") -> dict[str, Any]:
 @router.post("/providers/discover-models")
 def provider_discover_models(body: DiscoverModelsBody) -> dict[str, Any]:
     try:
-        models = _discover_models(body.base_url, body.api_key)
+        service = ProviderService()
+        profile = str(body.profile or "default").strip().lower() or "default"
+        provider = str(body.provider or "").strip().lower()
+        base_url, credential = _provider_runtime_details(service, profile, provider)
+        models = _discover_models(base_url, credential)
         return {"items": models, "count": len(models)}
     except Exception as exc:
         raise _bad(exc) from exc
