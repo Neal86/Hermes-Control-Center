@@ -75,16 +75,25 @@ function Read-ControlCenterVersion {
     throw "Could not read Control Center version from plugin.yaml"
 }
 
+function Write-Utf8NoBom([string]$Path, [string]$Text) {
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Text, $encoding)
+}
+
 function Sync-InstalledDashboardManifest {
     param([string]$Version)
     $manifestPath = Join-Path $HermesHome "plugins\hermes-extensions\dashboard\manifest.json"
     if (-not (Test-Path -LiteralPath $manifestPath)) { throw "Installed dashboard manifest is missing: $manifestPath" }
-    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $manifest = [System.IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
     $manifest.version = $Version
-    $manifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
-    $verify = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ([string]$verify.version -ne $Version) { throw "Installed dashboard manifest version sync failed." }
-    Write-Host "Dashboard manifest synced to v$Version." -ForegroundColor Cyan
+    $manifest.api = "plugin_api.py"
+    $json = $manifest | ConvertTo-Json -Depth 20
+    Write-Utf8NoBom -Path $manifestPath -Text $json
+    $bytes = [System.IO.File]::ReadAllBytes($manifestPath)
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { throw "Installed dashboard manifest still contains a UTF-8 BOM." }
+    $verify = [System.IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
+    if ([string]$verify.version -ne $Version -or [string]$verify.api -ne "plugin_api.py") { throw "Installed dashboard manifest sync failed." }
+    Write-Host "Dashboard manifest synced to v$Version (UTF-8 no BOM, api=plugin_api.py)." -ForegroundColor Cyan
 }
 
 $HermesCommand = Get-Command hermes -ErrorAction SilentlyContinue
@@ -93,11 +102,7 @@ if (-not (Test-Path -LiteralPath $InnerInstaller)) { throw "Missing install.ps1"
 if (-not (Test-Path -LiteralPath $Requirements)) { throw "Missing requirements-windows.txt" }
 
 Write-Host "Stopping any running Hermes Dashboard so updated plugin code cannot remain cached..." -ForegroundColor Cyan
-try {
-    & $HermesCommand.Source dashboard --stop 2>&1 | Out-Host
-} catch {
-    Write-Host "Dashboard stop returned a non-fatal error: $($_.Exception.Message)" -ForegroundColor DarkGray
-}
+try { & $HermesCommand.Source dashboard --stop 2>&1 | Out-Host } catch { Write-Host "Dashboard stop returned a non-fatal error: $($_.Exception.Message)" -ForegroundColor DarkGray }
 Start-Sleep -Milliseconds 700
 
 $python = Find-HermesPython
