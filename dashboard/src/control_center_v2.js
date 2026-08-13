@@ -70,6 +70,7 @@
 
   function ProviderPage() {
     const [profile, setProfile] = useState("default");
+    const [profileDraft, setProfileDraft] = useState("default");
     const [data, setData] = useState(null);
     const [forms, setForms] = useState({});
     const [loading, setLoading] = useState(true);
@@ -82,17 +83,31 @@
         const result = await request("/providers?profile=" + encodeURIComponent(profile));
         setData(result);
         const next = {};
-        (result.items || []).forEach(function (p) { next[p.id] = { api_key: "", base_url: p.base_url || "", default_model: p.default_model || "", configured: Boolean(p.configured) }; });
+        (result.items || []).forEach(function (p) {
+          next[p.id] = {
+            api_key: "",
+            base_url: p.base_url || "",
+            default_model: p.default_model || "",
+            custom_name: p.custom_name || "",
+            configured: Boolean(p.configured)
+          };
+        });
         setForms(next);
       } catch (e) { setError(errText(e)); }
       finally { setLoading(false); }
     }, [profile]);
     useEffect(function () { load(); }, [load]);
+    function applyProfile() {
+      const value = (profileDraft || "default").trim().toLowerCase() || "default";
+      setProfileDraft(value);
+      setProfile(value);
+    }
     async function save(p) {
       setBusy(p.id); setError(""); setNotice("");
       try {
         const form = forms[p.id] || {};
         const payload = { base_url: form.base_url || "", default_model: form.default_model || "" };
+        if (p.supports_custom_name) payload.custom_name = form.custom_name || "";
         if (form.api_key) payload.api_key = form.api_key;
         if (p.auth === "oauth") payload.configured = Boolean(form.configured);
         await request("/providers/" + encodeURIComponent(p.id) + "?profile=" + encodeURIComponent(profile), { method: "PUT", body: JSON.stringify(payload) });
@@ -104,7 +119,10 @@
     const items = (data && data.items) || [];
     return h("div", { className: "hx-page hx-stack" },
       h("div", { className: "hx-section-head" }, h("div", null, h("h1", null, "Providers"), h("div", { className: "hx-muted" }, "Configure model providers here, then choose Provider/Model on each Agent.")),
-        h("input", { value: profile, onChange: function (e) { setProfile(e.target.value.trim() || "default"); }, placeholder: "Hermes profile" })
+        h("div", { className: "hx-actions" },
+          h("input", { value: profileDraft, onChange: function (e) { setProfileDraft(e.target.value); }, onKeyDown: function (e) { if (e.key === "Enter") applyProfile(); }, placeholder: "Hermes profile" }),
+          h("button", { className: "hx-button secondary", type: "button", onClick: applyProfile, disabled: loading }, "Apply")
+        )
       ),
       error ? h(Card, { className: "hx-warning-card" }, error) : null,
       notice ? h(Card, null, notice) : null,
@@ -112,9 +130,10 @@
         const f = forms[p.id] || {};
         return h(Card, { key: p.id },
           h("div", { className: "hx-agent-head" }, h("div", null, h("h2", null, p.label), h("div", { className: "hx-muted" }, p.auth === "oauth" ? "OAuth / external login" : "API key")), h(Pill, { kind: p.configured ? "ok" : "paused" }, p.configured ? "configured" : "not configured")),
+          p.supports_custom_name ? Field("Provider name", h("input", { value: f.custom_name || "", placeholder: "e.g. APIPLANT", onChange: function (e) { setForms(Object.assign({}, forms, { [p.id]: Object.assign({}, f, { custom_name: e.target.value }) })); } })) : null,
           p.auth === "api_key" ? Field("API key", h("input", { type: "password", autoComplete: "off", value: f.api_key || "", placeholder: p.has_api_key ? "Stored — enter only to replace" : "Enter API key", onChange: function (e) { setForms(Object.assign({}, forms, { [p.id]: Object.assign({}, f, { api_key: e.target.value }) })); } })) : h("label", { className: "hx-inline-check" }, h("input", { type: "checkbox", checked: Boolean(f.configured), onChange: function (e) { setForms(Object.assign({}, forms, { [p.id]: Object.assign({}, f, { configured: e.target.checked }) })); } }), " Authentication completed externally"),
-          p.supports_base_url ? Field("Base URL", h("input", { value: f.base_url || "", placeholder: "Optional/custom endpoint", onChange: function (e) { setForms(Object.assign({}, forms, { [p.id]: Object.assign({}, f, { base_url: e.target.value }) })); } })) : null,
-          Field("Default model", h("input", { value: f.default_model || "", placeholder: "Optional", onChange: function (e) { setForms(Object.assign({}, forms, { [p.id]: Object.assign({}, f, { default_model: e.target.value }) })); } })),
+          p.supports_base_url ? Field("Base URL", h("input", { value: f.base_url || "", placeholder: p.id === "custom" ? "https://provider.example/v1" : "Optional/custom endpoint", onChange: function (e) { setForms(Object.assign({}, forms, { [p.id]: Object.assign({}, f, { base_url: e.target.value }) })); } })) : null,
+          Field("Default model", h("input", { value: f.default_model || "", placeholder: p.id === "custom" ? "Model ID" : "Optional", onChange: function (e) { setForms(Object.assign({}, forms, { [p.id]: Object.assign({}, f, { default_model: e.target.value }) })); } })),
           h("div", { className: "hx-actions" }, h("button", { type: "button", className: "hx-button", disabled: busy === p.id, onClick: function () { save(p); } }, busy === p.id ? "Saving…" : "Save"))
         );
       }))
