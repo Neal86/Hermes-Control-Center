@@ -30,6 +30,16 @@ function Normalize-Manifest([string]$Path) {
     if ([string]$verify.api -ne "plugin_api.py") { throw "Dashboard manifest API normalization failed: $Path" }
 }
 
-Normalize-Manifest (Join-Path $root "dashboard\manifest.json")
 $hermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
+$pluginsRoot = Join-Path $hermesHome "plugins"
+if (Test-Path -LiteralPath $pluginsRoot) {
+    Get-ChildItem -LiteralPath $pluginsRoot -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like ".hermes-control-center-txn-*" } |
+        ForEach-Object {
+            Write-Host ("Removing stale Control Center transaction directory: " + $_.FullName) -ForegroundColor Yellow
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+}
+
+Normalize-Manifest (Join-Path $root "dashboard\manifest.json")
 Normalize-Manifest (Join-Path $hermesHome "plugins\hermes-extensions\dashboard\manifest.json")
