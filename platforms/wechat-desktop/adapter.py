@@ -14,7 +14,7 @@ if str(CONTROL_CENTER_ROOT) not in sys.path:
     sys.path.insert(0, str(CONTROL_CENTER_ROOT))
 
 from resources.bindings import ResourceBindings  # noqa: E402
-from resources.context import current_agent  # noqa: E402
+from resources.context import current_agent, root_hermes_home  # noqa: E402
 from resources.wechat_bound import BoundWeChatDesktop  # noqa: E402
 
 
@@ -54,13 +54,26 @@ class _BoundFactory:
         return BoundWeChatDesktop(current_agent())
 
 
-# The original adapter remains responsible for polling, inbound dedup, Gateway
-# MessageEvent routing, automatic Agent replies and exact-target send safety.
-# Only its desktop factory is replaced: every gateway process now attaches to
-# the WeChat resource explicitly bound to its active Hermes profile/Agent.
 legacy._load_desktop_class = lambda: _BoundFactory
 
-WeChatDesktopPlatformAdapter = legacy.WeChatDesktopPlatformAdapter
+
+class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
+    """Legacy gateway behavior with Agent-bound desktop and root-scoped health."""
+
+    def __init__(self, config):
+        super().__init__(config)
+        self._health_path = (
+            root_hermes_home()
+            / "plugin-data"
+            / "hermes-extensions"
+            / "wechat"
+            / "gateway-health.json"
+        )
+        self._write_health()
+
+
+# legacy.register resolves this global when it creates the adapter factory.
+legacy.WeChatDesktopPlatformAdapter = WeChatDesktopPlatformAdapter
 check_requirements = legacy.check_requirements
 validate_config = legacy.validate_config
 
