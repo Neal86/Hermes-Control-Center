@@ -33,6 +33,7 @@ class ProviderBody(StrictBody):
     clear_api_key: bool = False
     base_url: str | None = Field(default=None, max_length=4096)
     default_model: str | None = Field(default=None, max_length=512)
+    models: list[str] | None = Field(default=None, max_length=128)
     custom_name: str | None = Field(default=None, max_length=128)
     configured: bool | None = None
     oauth_status: str | None = Field(default=None, max_length=128)
