@@ -11,6 +11,7 @@ $Source = Split-Path -Parent $MyInvocation.MyCommand.Path
 $HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA -and (Test-Path (Join-Path $env:LOCALAPPDATA "hermes"))) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
 $env:HERMES_HOME = $HermesHome
 $PluginsRoot = Join-Path $HermesHome "plugins"
+$ConfigPath = Join-Path $HermesHome "config.yaml"
 $Target = Join-Path $PluginsRoot "hermes-extensions"
 $PlatformSource = Join-Path $Source "platforms\wechat-desktop"
 $PlatformTarget = Join-Path $PluginsRoot "wechat-desktop"
@@ -127,24 +128,66 @@ function Copy-RuntimeTree {
 }
 
 function Enable-ControlCenterPlugins {
-    param([string]$PythonExe, [string]$TempRoot)
+    param([string]$PythonExe, [string]$TempRoot, [string]$ConfigFile)
     $helper = Join-Path $TempRoot "enable-plugins.py"
     @'
-from hermes_cli.config import load_config, save_config
-cfg = load_config()
-plugins = cfg.setdefault("plugins", {})
-enabled = plugins.get("enabled")
-if not isinstance(enabled, list):
-    enabled = []
+from __future__ import annotations
+import os
+import sys
+import tempfile
+from pathlib import Path
+import yaml
+
+path = Path(sys.argv[1]).expanduser().resolve()
+try:
+    value = yaml.safe_load(path.read_text("utf-8")) if path.exists() else {}
+except Exception as exc:
+    raise SystemExit(f"Unable to read Hermes config {path}: {exc}")
+cfg = value if isinstance(value, dict) else {}
+plugins = cfg.get("plugins")
+if not isinstance(plugins, dict):
+    plugins = {}
+    cfg["plugins"] = plugins
+raw = plugins.get("enabled")
+enabled = raw if isinstance(raw, list) else []
+clean = []
+for item in enabled:
+    name = str(item or "").strip().replace("\\", "/")
+    lower = name.lower()
+    if not name:
+        continue
+    if ".hermes-control-center-txn-" in lower:
+        continue
+    if "backup-hermes-extensions" in lower or "backup-wechat-desktop" in lower:
+        continue
+    if name not in clean:
+        clean.append(name)
 for name in ("hermes-extensions", "wechat-desktop"):
-    if name not in enabled:
-        enabled.append(name)
-plugins["enabled"] = enabled
-save_config(cfg)
-print("Enabled plugins: " + ", ".join(enabled))
+    if name not in clean:
+        clean.append(name)
+plugins["enabled"] = clean
+path.parent.mkdir(parents=True, exist_ok=True)
+fd, tmp_name = tempfile.mkstemp(prefix="config.", suffix=".yaml.tmp", dir=str(path.parent))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        yaml.safe_dump(cfg, handle, sort_keys=False, allow_unicode=True)
+    os.replace(tmp_name, path)
+finally:
+    try:
+        os.unlink(tmp_name)
+    except OSError:
+        pass
+verify = yaml.safe_load(path.read_text("utf-8")) or {}
+actual = ((verify.get("plugins") or {}).get("enabled") or []) if isinstance(verify, dict) else []
+missing = [name for name in ("hermes-extensions", "wechat-desktop") if name not in actual]
+if missing:
+    raise SystemExit("plugins.enabled verification failed; missing: " + ", ".join(missing))
+print("Enabled plugins: " + ", ".join(str(x) for x in actual))
 '@ | Set-Content -LiteralPath $helper -Encoding UTF8
-    & $PythonExe $helper
-    if ($LASTEXITCODE -ne 0) { throw "Could not update Hermes plugins.enabled (exit code $LASTEXITCODE)." }
+    $output = & $PythonExe $helper $ConfigFile 2>&1
+    $exitCode = $LASTEXITCODE
+    $output | ForEach-Object { Write-Host ([string]$_) }
+    if ($exitCode -ne 0) { throw "Could not update Hermes plugins.enabled (exit code $exitCode)." }
 }
 
 $RequiredPaths = @(
@@ -210,15 +253,19 @@ if (-not $SkipDependencies) {
     try {
         & $HermesPython -m pip --version 2>$null | Out-Null
         if ($LASTEXITCODE -eq 0) {
-            & $HermesPython -m pip install -r $Requirements
-            if ($LASTEXITCODE -eq 0) { $installed = $true }
+            $pipOutput = & $HermesPython -m pip install -r $Requirements 2>&1
+            $pipExit = $LASTEXITCODE
+            $pipOutput | ForEach-Object { Write-Host ([string]$_) }
+            if ($pipExit -eq 0) { $installed = $true }
         }
     } catch {}
     if (-not $installed) {
         $uv = Get-Command uv -ErrorAction SilentlyContinue
         if ($uv) {
-            & $uv.Source pip install --python $HermesPython -r $Requirements
-            if ($LASTEXITCODE -eq 0) { $installed = $true }
+            $uvOutput = & $uv.Source pip install --python $HermesPython -r $Requirements 2>&1
+            $uvExit = $LASTEXITCODE
+            $uvOutput | ForEach-Object { Write-Host ([string]$_) }
+            if ($uvExit -eq 0) { $installed = $true }
         }
     }
     if (-not $installed) { throw "Unable to install Control Center dependencies into Hermes Python." }
@@ -226,7 +273,7 @@ if (-not $SkipDependencies) {
 
 $PluginVersion = Read-PluginVersion (Join-Path $Source "plugin.yaml")
 New-Item -ItemType Directory -Force -Path $PluginsRoot | Out-Null
-$TxnRoot = Join-Path $PluginsRoot (".hermes-control-center-txn-" + [Guid]::NewGuid().ToString("N"))
+$TxnRoot = Join-Path $env:TEMP ("hermes-control-center-txn-" + [Guid]::NewGuid().ToString("N"))
 $StagePlugin = Join-Path $TxnRoot "hermes-extensions"
 $StagePlatform = Join-Path $TxnRoot "wechat-desktop"
 $BackupPlugin = Join-Path $TxnRoot "backup-hermes-extensions"
@@ -235,7 +282,7 @@ $BackupLegacyNestedPlatform = Join-Path $TxnRoot "backup-legacy-nested-wechat-de
 
 try {
     Write-Host "Staging Hermes Control Center v$PluginVersion..."
-    Write-Stage "Preparing clean staging directory"
+    Write-Stage "Preparing clean staging directory outside Hermes plugins root"
     New-Item -ItemType Directory -Force -Path $StagePlugin | Out-Null
 
     Write-Stage "Copying runtime files only"
@@ -317,8 +364,8 @@ try {
     Move-Item -LiteralPath $StagePlatform -Destination $PlatformTarget -Force
 
     if (-not $NoEnable) {
-        Write-Stage "Enabling plugins through Hermes config"
-        Enable-ControlCenterPlugins -PythonExe $HermesPython -TempRoot $TxnRoot
+        Write-Stage "Cleaning stale plugin enable entries and enabling current plugins"
+        Enable-ControlCenterPlugins -PythonExe $HermesPython -TempRoot $TxnRoot -ConfigFile $ConfigPath
     } else {
         Write-Stage "Plugin enable deferred by -NoEnable"
     }
