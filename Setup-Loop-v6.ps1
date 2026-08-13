@@ -88,6 +88,52 @@ function Find-HermesPython {
     return $null
 }
 
+function Test-PackageComplete {
+    $required = @(
+        "plugin.yaml",
+        "__init__.py",
+        "compatibility.py",
+        "doctor.ps1",
+        "Install-Control-Center-Safe.ps1",
+        "install.ps1",
+        "dashboard\manifest.json",
+        "dashboard\plugin_api.py",
+        "dashboard\plugin_api_core.py",
+        "dashboard\extra_api.py",
+        "dashboard\api_smoke.py",
+        "dashboard\build_bundle.py",
+        "dashboard\src\api.js",
+        "dashboard\src\components.js",
+        "dashboard\src\app.js",
+        "dashboard\src\control_center_v2.js",
+        "dashboard\src\index.js",
+        "management\service.py",
+        "management\routed_service.py",
+        "task_center\service_v3.py",
+        "providers\service.py",
+        "resources\context.py",
+        "resources\bindings.py",
+        "resources\policy.py",
+        "resources\tools.py",
+        "resources\wechat_bound.py",
+        "wechat\runtime.py",
+        "platforms\wechat-desktop\plugin.yaml",
+        "platforms\wechat-desktop\adapter.py",
+        "platforms\wechat-desktop\adapter_legacy.py",
+        "scripts\plugin_state.py"
+    )
+    $missing = @()
+    foreach ($rel in $required) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Root $rel))) { $missing += $rel }
+    }
+    if ($missing.Count) {
+        Write-Host "Control Center package is incomplete:" -ForegroundColor Red
+        $missing | ForEach-Object { Write-Host ("  missing: " + $_) -ForegroundColor Red }
+        return $false
+    }
+    return $true
+}
+
 function Normalize-PluginState {
     $python = Find-HermesPython
     if (-not $python -or -not (Test-Path -LiteralPath $PluginStateHelper)) { return 2 }
@@ -118,6 +164,7 @@ function Stop-DashboardAfterPluginUpdate {
 }
 
 function Install-ControlCenter([switch]$Repair) {
+    if (-not (Test-PackageComplete)) { return 3 }
     $code = Normalize-PluginState
     if ($code -ne 0) { return $code }
     $args = if ($Repair) { @("-Repair") } else { @() }
