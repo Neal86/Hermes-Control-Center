@@ -33,6 +33,7 @@ class ProviderBody(StrictBody):
     clear_api_key: bool = False
     base_url: str | None = Field(default=None, max_length=4096)
     default_model: str | None = Field(default=None, max_length=512)
+    custom_name: str | None = Field(default=None, max_length=128)
     configured: bool | None = None
     oauth_status: str | None = Field(default=None, max_length=128)
 
@@ -68,10 +69,11 @@ def resources(refresh: bool = False) -> dict[str, Any]:
 @router.post("/resources/{resource_id}/bind")
 def bind_resource(resource_id: str, body: BindingBody) -> dict[str, Any]:
     try:
-        known = {row["name"] for row in ManagementCenter().agent_list(probe_runtime=False)}
-        if body.agent not in known:
+        known = {str(row["name"]).strip().lower() for row in ManagementCenter().agent_list(probe_runtime=False)}
+        agent = body.agent.strip().lower()
+        if agent not in known:
             raise ValueError("unknown agent")
-        return ResourceBindings().bind(resource_id, body.agent)
+        return ResourceBindings().bind(resource_id, agent)
     except Exception as exc:
         raise _bad(exc) from exc
 
@@ -96,9 +98,12 @@ def agent_resources(agent: str, refresh: bool = True) -> dict[str, Any]:
 def agent_browser(agent: str) -> dict[str, Any]:
     try:
         resource = ResourceBindings().require(agent, "browser", ready=True)
+        port = resource.get("debug_port")
+        if not port:
+            raise ResourceAccessError("bound browser has no CDP endpoint")
         return {
             "resource": resource,
-            "cdp_url": f"http://127.0.0.1:{resource['debug_port']}" if resource.get("debug_port") else None,
+            "cdp_url": f"http://127.0.0.1:{int(port)}",
             "policy": "bound-only",
         }
     except Exception as exc:
@@ -115,7 +120,7 @@ def bound_wechat_status(agent: str, resource_id: str | None = None) -> dict[str,
 
 @router.post("/agents/{agent}/wechat/dry-run")
 def bound_wechat_dry_run(agent: str, body: WeChatBoundDryRunBody) -> dict[str, Any]:
-    if body.agent != agent:
+    if body.agent.strip().lower() != agent.strip().lower():
         raise HTTPException(status_code=400, detail="agent mismatch")
     try:
         return BoundWeChatDesktop(agent, body.resource_id).send_message(body.chat, body.text, dry_run=True)
