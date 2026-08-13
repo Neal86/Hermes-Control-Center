@@ -31,7 +31,25 @@ def _load(path: Path, name: str):
 
 
 core = _load(DASHBOARD_ROOT / "plugin_api_core.py", "hermes_control_center_dashboard_core")
-extra = _load(DASHBOARD_ROOT / "extra_api.py", "hermes_control_center_dashboard_extra")
+
+# Hermes 0.20 may already have a top-level module named `providers` loaded.
+# Temporarily clear that name while this plugin imports its own providers package,
+# then restore the host module immediately after the plugin API is initialized.
+_saved_providers = {
+    name: module
+    for name, module in list(sys.modules.items())
+    if name == "providers" or name.startswith("providers.")
+}
+for _name in _saved_providers:
+    sys.modules.pop(_name, None)
+try:
+    extra = _load(DASHBOARD_ROOT / "extra_api.py", "hermes_control_center_dashboard_extra")
+finally:
+    for _name in list(sys.modules):
+        if _name == "providers" or _name.startswith("providers."):
+            sys.modules.pop(_name, None)
+    sys.modules.update(_saved_providers)
+
 from management import ManagementCenter as RoutedManagementCenter  # noqa: E402
 core.ManagementCenter = RoutedManagementCenter
 
