@@ -1,7 +1,9 @@
 name: hermes-extensions
 version: "0.5.1"
-description: Standalone Hermes extensions with polished accessible Management Center UI, hardened Windows WeChat automation, task management, and native Agent/Project administration when supported
+description: Standalone Hermes Control Center with Provider management, Agent resource isolation, Windows WeChat automation, task management, and native Agent/Project administration
 provides_tools:
+  - resource_list
+  - bound_browser
   - wechat_status
   - wechat_list_chats
   - wechat_get_unread_chats
@@ -24,3 +26,5 @@ provides_tools:
   - project_create
   - project_update
   - project_action
+provides_hooks:
+  - pre_tool_call
