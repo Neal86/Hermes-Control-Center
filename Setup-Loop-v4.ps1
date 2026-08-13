@@ -6,8 +6,9 @@ $ProgressPreference = "SilentlyContinue"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $SetupScript = Join-Path $Root "Setup-Hermes-Control-Center-v2.ps1"
-$DashboardScript = Join-Path $Root "Dashboard-Launch-v2.ps1"
+$DashboardScript = Join-Path $Root "Dashboard-Launch-v3.ps1"
 $HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA -and (Test-Path (Join-Path $env:LOCALAPPDATA "hermes"))) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
+$env:HERMES_HOME = $HermesHome
 $HermesVersionSource = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/pyproject.toml"
 $ControlCenterVersionSource = "https://raw.githubusercontent.com/Neal86/Hermes-Control-Center/main/plugin.yaml"
 
@@ -85,7 +86,7 @@ while ($true) {
         "4" { Write-Host "`nRunning: Repair Control Center" -ForegroundColor Cyan; $code = Run-Script $SetupScript @("-Action","Repair") }
         "5" {
             Write-Host "`nRunning: Open Hermes Dashboard" -ForegroundColor Cyan
-            if (-not (Test-Path -LiteralPath $DashboardScript)) { Write-Host "Missing Dashboard-Launch-v2.ps1" -ForegroundColor Red; $code = 2 }
+            if (-not (Test-Path -LiteralPath $DashboardScript)) { Write-Host "Missing Dashboard-Launch-v3.ps1" -ForegroundColor Red; $code = 2 }
             else { $code = Run-Script $DashboardScript @() }
         }
         default { Write-Host "`nInvalid selection. Please choose 1-6." -ForegroundColor Yellow; [void](Read-Host "Press Enter to return to menu"); continue }
