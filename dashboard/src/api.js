@@ -9,8 +9,14 @@
   HX.SDK = SDK;
   HX.React = SDK.React;
   HX.h = SDK.React.createElement;
-  HX.TABS = ["overview", "agents", "projects", "tasks", "wechat"];
+  HX.TABS = ["overview", "agents", "projects", "tasks"];
   HX.request = function request(path, init) {
+    // WeChat discovery/binding/status lives under the Resources section now.
+    // Legacy Control code may still ask for gateway health; satisfy it locally
+    // so Control never calls the standalone WeChat API path.
+    if (path === "/wechat/health") {
+      return Promise.resolve({ status: "moved_to_resources", consecutive_failures: 0, last_error: null, last_success_at: null, updated_at: null });
+    }
     const options = Object.assign({}, init || {});
     if (options.body && !options.headers) options.headers = { "Content-Type": "application/json" };
     return SDK.fetchJSON(API + path, options);
