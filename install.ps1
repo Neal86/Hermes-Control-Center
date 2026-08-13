@@ -109,11 +109,13 @@ $RequiredPaths = @(
     "providers\__init__.py",
     "providers\service.py",
     "resources\__init__.py",
+    "resources\context.py",
     "resources\discovery.py",
     "resources\registry.py",
     "resources\bindings.py",
     "resources\policy.py",
-    "resources\browser.py",
+    "resources\tools.py",
+    "resources\wechat_bound.py",
     "wechat\adapter.py",
     "wechat\runtime.py",
     "requirements-windows.txt"
@@ -195,9 +197,11 @@ try {
         (Join-Path $StagePlugin "management\overview.py"),
         (Join-Path $StagePlugin "task_center\service_v3.py"),
         (Join-Path $StagePlugin "providers\service.py"),
+        (Join-Path $StagePlugin "resources\context.py"),
         (Join-Path $StagePlugin "resources\bindings.py"),
         (Join-Path $StagePlugin "resources\policy.py"),
-        (Join-Path $StagePlugin "resources\browser.py"),
+        (Join-Path $StagePlugin "resources\tools.py"),
+        (Join-Path $StagePlugin "resources\wechat_bound.py"),
         (Join-Path $StagePlugin "wechat\runtime.py"),
         (Join-Path $StagePlatform "plugin.yaml")
     )) {
