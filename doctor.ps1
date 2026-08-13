@@ -111,8 +111,10 @@ if ($Installed) {
         dashboard_api_entry = "dashboard\plugin_api.py"
         dashboard_api_core = "dashboard\plugin_api_core.py"
         dashboard_api_extra = "dashboard\extra_api.py"
+        dashboard_api_smoke = "dashboard\api_smoke.py"
         management_overview = "management\overview.py"
         management_service = "management\service.py"
+        management_routed_service = "management\routed_service.py"
         task_service_v3 = "task_center\service_v3.py"
         provider_service = "providers\service.py"
         resource_context = "resources\context.py"
@@ -147,6 +149,20 @@ if ($Installed) {
         $Report["dashboard_manifest_api_target"] = ""
         $Report["dashboard_manifest_api_exists"] = $false
     }
+
+    $Report["dashboard_api_importable"] = $false
+    $Report["dashboard_api_smoke_output"] = ""
+    $smokePath = Join-Path $PluginRoot "dashboard\api_smoke.py"
+    if ($HermesPython -and (Test-Path -LiteralPath $smokePath)) {
+        try {
+            $smokeOutput = (& $HermesPython $smokePath 2>&1 | Out-String).Trim()
+            $Report["dashboard_api_smoke_output"] = $smokeOutput
+            $Report["dashboard_api_importable"] = $LASTEXITCODE -eq 0
+        } catch {
+            $Report["dashboard_api_smoke_output"] = $_.Exception.Message
+            $Report["dashboard_api_importable"] = $false
+        }
+    }
 }
 
 $Warnings = New-Object System.Collections.Generic.List[string]
@@ -162,11 +178,12 @@ if (-not $Report.wechat_dependencies) { $Warnings.Add("Windows WeChat Python dep
 if ($Installed) {
     foreach ($key in @(
         "plugin_manifest", "plugin_entry", "dashboard_manifest", "dashboard_bundle",
-        "dashboard_api_entry", "dashboard_api_core", "dashboard_api_extra",
-        "management_overview", "management_service", "task_service_v3", "provider_service",
+        "dashboard_api_entry", "dashboard_api_core", "dashboard_api_extra", "dashboard_api_smoke",
+        "management_overview", "management_service", "management_routed_service", "task_service_v3", "provider_service",
         "resource_context", "resource_discovery", "resource_registry", "resource_bindings",
         "resource_policy", "resource_tools", "resource_wechat_bound", "wechat_runtime",
-        "wechat_platform_manifest", "wechat_platform_adapter", "wechat_platform_legacy", "dashboard_manifest_api_exists"
+        "wechat_platform_manifest", "wechat_platform_adapter", "wechat_platform_legacy",
+        "dashboard_manifest_api_exists", "dashboard_api_importable"
     )) { if (-not $Report[$key]) { $Errors.Add("Installed component missing or invalid: $key") } }
     if (-not $Report.plugin_enabled) { $Errors.Add("hermes-extensions is not present in plugins.enabled in $ConfigPath.") }
     if (-not $Report.wechat_plugin_enabled) { $Errors.Add("wechat-desktop is not present in plugins.enabled in $ConfigPath.") }
