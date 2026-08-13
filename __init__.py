@@ -3,9 +3,13 @@
 from collections.abc import Iterable
 from typing import Any
 
-from . import schemas, tools
-from .resources import tools as resource_tools
-from .resources.policy import pre_tool_call as resource_pre_tool_call
+from .compatibility import install_hermes_cli_compat
+
+install_hermes_cli_compat()
+
+from . import schemas, tools  # noqa: E402
+from .resources import tools as resource_tools  # noqa: E402
+from .resources.policy import pre_tool_call as resource_pre_tool_call  # noqa: E402
 
 ToolSpec = tuple[str, dict[str, Any], Any]
 
@@ -25,9 +29,6 @@ def _register_group(ctx, toolset: str, specs: Iterable[ToolSpec], *, check_fn=No
 
 
 def register(ctx):
-    # Browser authorization is enforced at Hermes' pre-tool gate. When an Agent
-    # has no ready bound browser the native browser call is vetoed; when it does,
-    # BROWSER_CDP_URL is pinned to that exact instance immediately before dispatch.
     ctx.register_hook("pre_tool_call", resource_pre_tool_call)
 
     _register_group(
@@ -39,9 +40,6 @@ def register(ctx):
         ],
     )
 
-    # WeChat tools are visible only when the active Agent has a ready bound
-    # WeChat resource. The check is binding-aware and never falls back to any
-    # other visible desktop instance.
     _register_group(
         ctx,
         "hermes_extensions_wechat",
@@ -68,9 +66,6 @@ def register(ctx):
         ],
     )
 
-    # Keep the declared manifest surface stable across Hermes versions. Project
-    # handlers themselves fail safely with an explicit unsupported payload when
-    # the installed Hermes build has no native `project` command.
     _register_group(
         ctx,
         "hermes_extensions_management",

@@ -11,6 +11,10 @@ PLUGIN_ROOT = DASHBOARD_ROOT.parent
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
+from compatibility import install_hermes_cli_compat  # noqa: E402
+
+install_hermes_cli_compat()
+
 
 def _load(path: Path, name: str):
     spec = importlib.util.spec_from_file_location(name, path)
