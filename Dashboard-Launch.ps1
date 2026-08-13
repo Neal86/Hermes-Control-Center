@@ -60,25 +60,59 @@ function Convert-NpmVersion {
     return $null
 }
 
+function Invoke-NativeLogged {
+    param(
+        [Parameter(Mandatory=$true)][string]$FilePath,
+        [Parameter(Mandatory=$true)][string[]]$Arguments,
+        [Parameter(Mandatory=$true)][string]$WorkingDirectory,
+        [Parameter(Mandatory=$true)][string]$Label,
+        [switch]$AppendBuildLog
+    )
+
+    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    $token = [Guid]::NewGuid().ToString("N")
+    $outPath = Join-Path $LogDir ("native-" + $token + ".out.log")
+    $errPath = Join-Path $LogDir ("native-" + $token + ".err.log")
+
+    try {
+        if ($AppendBuildLog) {
+            ("`n=== " + $Label + " ===") | Out-File -LiteralPath $WebBuildLog -Append -Encoding utf8
+        }
+
+        $proc = Start-Process -FilePath $FilePath -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory -PassThru -Wait -NoNewWindow -RedirectStandardOutput $outPath -RedirectStandardError $errPath
+
+        $stdout = if (Test-Path -LiteralPath $outPath) { Get-Content -LiteralPath $outPath -Raw -ErrorAction SilentlyContinue } else { "" }
+        $stderr = if (Test-Path -LiteralPath $errPath) { Get-Content -LiteralPath $errPath -Raw -ErrorAction SilentlyContinue } else { "" }
+
+        if ($stdout) { Write-Host $stdout.TrimEnd() }
+        if ($stderr) { Write-Host $stderr.TrimEnd() -ForegroundColor Yellow }
+
+        if ($AppendBuildLog) {
+            if ($stdout) { $stdout | Out-File -LiteralPath $WebBuildLog -Append -Encoding utf8 }
+            if ($stderr) { $stderr | Out-File -LiteralPath $WebBuildLog -Append -Encoding utf8 }
+            ("[exit code: " + $proc.ExitCode + "]") | Out-File -LiteralPath $WebBuildLog -Append -Encoding utf8
+        }
+
+        return [int]$proc.ExitCode
+    } finally {
+        Remove-Item -LiteralPath $outPath, $errPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Ensure-CompatibleNpm {
     $npm = Find-NpmCommand
     if (-not $npm) { throw "Node/npm is not available." }
 
     $versionText = try { (& $npm --version 2>&1 | Out-String).Trim() } catch { "" }
     $version = Convert-NpmVersion $versionText
-    if ($null -eq $version) {
-        throw "Could not determine npm version from '$versionText'."
-    }
+    if ($null -eq $version) { throw "Could not determine npm version from '$versionText'." }
 
-    # Hermes currently declares npm <11.10.0 OR >=11.17.0. Versions 11.10-11.16
-    # understand min-release-age but not min-release-age-exclude, so Hermes'
-    # engine-strict .npmrc intentionally rejects them.
     $badFloor = [version]"11.10.0"
     $goodFloor = [version]"11.17.0"
     if ($version -ge $badFloor -and $version -lt $goodFloor) {
         Write-Host "npm $versionText is incompatible with Hermes' security policy. Upgrading npm to 11.17+..." -ForegroundColor Yellow
-        & $npm install -g "npm@^11.17.0" 2>&1 | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "Automatic npm upgrade failed with exit code $LASTEXITCODE." }
+        $upgradeCode = Invoke-NativeLogged -FilePath $npm -Arguments @("install", "-g", "npm@^11.17.0") -WorkingDirectory $HermesRoot -Label "npm global upgrade"
+        if ($upgradeCode -ne 0) { throw "Automatic npm upgrade failed with exit code $upgradeCode." }
         $npm = Find-NpmCommand
         if (-not $npm) { throw "npm disappeared after upgrade." }
         $versionText = try { (& $npm --version 2>&1 | Out-String).Trim() } catch { "" }
@@ -115,33 +149,26 @@ function Repair-HermesWebDist {
     Write-Host "Node: $nodeVersion   npm: $npmVersion"
     Write-Host "Web build log: $WebBuildLog"
 
-    Push-Location $HermesRoot
-    try {
-        "=== npm install --workspace web ===" | Out-File -LiteralPath $WebBuildLog -Encoding utf8
-        & $npm install --workspace web 2>&1 | Tee-Object -FilePath $WebBuildLog -Append | Out-Host
-        $installCode = $LASTEXITCODE
-        if ($installCode -ne 0) {
-            Write-Host ""
-            Write-Host "Hermes web dependency installation failed." -ForegroundColor Red
-            Show-LogTail $WebBuildLog 160
-            throw "npm install --workspace web failed with exit code $installCode."
-        }
+    "Hermes Dashboard web repair log" | Out-File -LiteralPath $WebBuildLog -Encoding utf8
 
-        "`n=== npm run build --workspace web ===" | Out-File -LiteralPath $WebBuildLog -Append -Encoding utf8
-        & $npm run build --workspace web 2>&1 | Tee-Object -FilePath $WebBuildLog -Append | Out-Host
-        $buildCode = $LASTEXITCODE
-        if ($buildCode -ne 0) {
-            Write-Host ""
-            Write-Host "Hermes web build failed." -ForegroundColor Red
-            Show-LogTail $WebBuildLog 160
-            throw "npm run build --workspace web failed with exit code $buildCode."
-        }
-    } finally {
-        Pop-Location
+    $installCode = Invoke-NativeLogged -FilePath $npm -Arguments @("install", "--workspace", "web") -WorkingDirectory $HermesRoot -Label "npm install --workspace web" -AppendBuildLog
+    if ($installCode -ne 0) {
+        Write-Host ""
+        Write-Host "Hermes web dependency installation failed." -ForegroundColor Red
+        Show-LogTail $WebBuildLog 180
+        throw "npm install --workspace web failed with exit code $installCode."
+    }
+
+    $buildCode = Invoke-NativeLogged -FilePath $npm -Arguments @("run", "build", "--workspace", "web") -WorkingDirectory $HermesRoot -Label "npm run build --workspace web" -AppendBuildLog
+    if ($buildCode -ne 0) {
+        Write-Host ""
+        Write-Host "Hermes web build failed." -ForegroundColor Red
+        Show-LogTail $WebBuildLog 180
+        throw "npm run build --workspace web failed with exit code $buildCode."
     }
 
     if (-not (Test-Path -LiteralPath $WebIndex)) {
-        Show-LogTail $WebBuildLog 160
+        Show-LogTail $WebBuildLog 180
         throw "Hermes web build completed without producing '$WebIndex'."
     }
 
@@ -191,7 +218,5 @@ while ((Get-Date) -lt $deadline) {
 }
 
 Show-DashboardLogs
-try {
-    & $hermes.Source dashboard --status 2>&1 | Out-Host
-} catch {}
+try { & $hermes.Source dashboard --status 2>&1 | Out-Host } catch {}
 throw "Hermes Dashboard did not become reachable on $HostName`:$Port within $TimeoutSeconds seconds. See logs above."
