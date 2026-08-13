@@ -15,6 +15,14 @@ def _result(fn: Callable[[], Any]) -> str:
         return json.dumps({"ok": False, "error": type(exc).__name__, "message": str(exc)}, ensure_ascii=False)
 
 
+def bound_wechat_available() -> bool:
+    try:
+        ResourceBindings().require(current_agent(), "wechat", ready=True)
+        return True
+    except Exception:
+        return False
+
+
 def resource_list(args: dict, **kwargs) -> str:
     del args, kwargs
     agent = current_agent()
@@ -26,10 +34,13 @@ def bound_browser(args: dict, **kwargs) -> str:
     agent = current_agent()
     def load():
         row = ResourceBindings().require(agent, "browser", ready=True)
+        port = row.get("debug_port")
+        if not port:
+            raise RuntimeError("bound browser has no usable CDP port")
         return {
             "agent": agent,
             "resource": row,
-            "cdp_url": f"http://127.0.0.1:{int(row['debug_port'])}" if row.get("debug_port") else None,
+            "cdp_url": f"http://127.0.0.1:{int(port)}",
             "policy": "bound-only",
         }
     return _result(load)
