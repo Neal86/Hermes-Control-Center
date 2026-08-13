@@ -1,69 +1,98 @@
 # Hermes Control Center
 
-Standalone control center and extensions for **NousResearch/hermes-agent**. This repository does not depend on the OpenAkita runtime, APIs, agents, or databases.
+Standalone control center and extensions for **NousResearch/hermes-agent**. This repository does not depend on OpenAkita runtime, APIs, agents, or databases.
 
 Repository: `Neal86/Hermes-Control-Center`
 
 Current package version: **0.5.1**.
 
-## Hermes Management Center v0.5.1
+## One-click Windows Setup
 
-`hermes dashboard` gets one complete Management Center with five tabs:
+Download the repository ZIP, extract it, then double-click:
 
-- **Overview** — Agent/runtime/task counters, upcoming work, Project capability state, persisted WeChat Gateway health and scoped partial-load errors.
-- **Agents** — native Hermes Profile create/clone/rename/edit/use/export/delete, workspace/model/provider/SOUL management and Gateway start/stop/restart/status.
-- **Projects** — native Hermes Project create/use/archive/restore, folder add/remove/set-primary, board binding and Workspace Agent assignment. Unsupported Hermes builds show an explicit compatibility state instead of exposing failing controls.
-- **Tasks** — searchable/filterable Cron and Kanban management with create/edit, Cron pause/resume/run/delete, Kanban assignment/priority/archive, upcoming occurrences and execution history.
-- **WeChat** — Gateway health, manual desktop checks, partial-result reporting, recent/unread chats and a fail-closed dry-run test that never presses Enter.
+```text
+Setup.cmd
+```
 
-### v0.5.1 UX polish
+Or run directly in PowerShell:
 
-The frontend is maintained as small source modules (`api.js`, `components.js`, `app.js`, `index.js`) and deterministically bundled into the single `dashboard/dist/index.js` file required by Hermes. Installation and Release builds both run `dashboard/build_bundle.py`, so Hermes still loads one normal plugin bundle.
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\Setup-Hermes-Control-Center.ps1
+```
 
-User-facing UX improvements:
+The Setup menu provides:
 
-- Entering the **WeChat** tab reads persisted health only and never automatically focuses or scans the Windows WeChat UI.
-- **Check desktop** is an explicit user action and uses partial-result handling, so a failed scan no longer hides successful desktop status or chat results.
-- The top **Refresh** button is context-aware: Tasks refreshes task state, WeChat refreshes health only, and other tabs refresh Management state.
-- Visible pages auto-refresh lightweight state (`30s` for Management/Tasks, `15s` for WeChat health) only while the document is visible. Auto-refresh never runs WeChat UI Automation.
-- Dialogs trap keyboard focus, support Escape/backdrop close, restore focus to the launching control and lock background scrolling.
-- Native browser `confirm()` prompts were replaced by a consistent in-product confirmation dialog.
-- Agent, Project and Task edit/create dialogs protect unsaved changes before closing.
-- Action buttons expose granular busy labels/states and block duplicate mutations while an action is running.
-- Mobile controls use touch-friendly targets and wrapped action rows.
-- Focus-visible styling is explicit for keyboard navigation.
+1. **Install / update everything** — installs Hermes if missing, optionally updates an existing Hermes install, then installs/updates Control Center.
+2. **Update Hermes only** — updates the detected Hermes installation without reinstalling Control Center.
+3. **Install / update Control Center only** — keeps the current Hermes version and refreshes the plugin.
+4. **Repair Control Center** — runs preflight and performs a transactional reinstall.
+5. **Open Hermes Dashboard** — launches `hermes dashboard`.
+
+Setup detects the existing Hermes install type. A `uv tool` installation is updated with `uv tool upgrade hermes-agent`; the official Windows installation is updated through the current official Hermes Windows installer. Unknown/external Hermes installations are never overwritten automatically.
+
+Setup preserves the existing Hermes home and does not delete Profiles/Agents, Skills, Cron state, plugin-data, Provider settings, or resource bindings.
+
+## Control Center
+
+`hermes dashboard` loads the Management Center with these sections:
+
+- **Overview** — runtime/Agent/task status and upcoming work.
+- **Agents** — Hermes Profile create/clone/edit/use/export/delete, workspace, Provider, model, SOUL and Gateway controls.
+- **Projects** — native Hermes Project management when supported by the installed Hermes build.
+- **Tasks** — Cron and Kanban management across Agents.
+- **WeChat** — Windows WeChat health, conversation inspection and guarded dry-run controls.
+- **Providers** — configure Provider endpoint/model/credential settings used by Agents.
+- **Resources** — discover running Windows WeChat, Chrome and Edge resources and bind them to specific Agents.
+
+## Agent resource isolation
+
+Control Center treats desktop resource bindings as an authorization boundary, not a preference.
+
+- A WeChat or browser resource is exclusively assigned to one Agent.
+- An Agent may only use resources explicitly bound to that Agent.
+- No binding means access is denied.
+- An offline bound resource returns an explicit unavailable error.
+- A non-attachable browser is visible in Resources but cannot be used for browser automation.
+- There is no fallback to another Agent's WeChat/browser.
+
+Resource state is persisted under:
+
+```text
+~/.hermes/plugin-data/hermes-extensions/resources/
+    resources.json
+    bindings.json
+```
 
 ## Windows WeChat Desktop
 
-The plugin registers local Windows WeChat tools and a Gateway platform. Automation uses Windows UI Automation rather than fixed coordinates and fails closed before outbound sends when the exact target conversation cannot be proven.
+The plugin registers local Windows WeChat tools plus a Hermes Gateway platform. Automation uses Windows UI Automation rather than fixed coordinates and verifies the bound HWND/PID before operations.
 
-Registered tools:
+Registered tools include:
 
 - `wechat_status`
 - `wechat_list_chats`
 - `wechat_get_unread_chats`
 - `wechat_get_messages`
 - `wechat_send_message`
+- `resource_list`
+- `bound_browser`
 
-For known group conversations, configure exact names with `WECHAT_DESKTOP_GROUP_CHATS` (comma separated) or platform `extra.group_chats`. Those conversations enter Hermes with `chat_type="group"`; other chats remain `dm` unless explicitly configured.
+WeChat tool calls require an Agent identity and resolve only that Agent's bound WeChat resource. The platform adapter also resolves the current Hermes Profile/Agent binding before polling or sending.
 
-The hardened `wechat/runtime.py` serializes UI operations across threads/processes. The exclusive transaction covers chat selection, exact-target verification, paste, final verification, Enter/dry-run cleanup and duplicate-send state. Lock timeout fails closed.
+## Browser binding
 
-Gateway polling persists `healthy`, `degraded`, `failed` or `stopped` state plus consecutive failures, last error and last successful poll. Repeated UIA failures back off exponentially; recovery resets health.
+Resources detects running Chrome and Edge windows, including profile/user-data-dir information when available. Browsers started with a Chrome DevTools endpoint are marked `ready`; ordinary running browsers without an attachable CDP endpoint are marked `not_attachable`.
 
-## Hermes Task Center
+Hermes browser tools are protected by a plugin `pre_tool_call` policy hook. For browser tools, the hook requires a browser bound to the active Agent. When the bound browser exposes a CDP port, the plugin sets `BROWSER_CDP_URL` for the call so Hermes targets the assigned browser instead of selecting another instance.
 
-Task Center v3 reads native per-profile Cron state/history plus Hermes Kanban surfaces and uses Hermes CLI for mutations.
+## Providers
 
-Upcoming scheduling is globally fair: each scheduled task gets first-occurrence visibility before high-frequency recurring jobs fill the remaining result budget. Cron execution status is queried in batches with one SQLite connection per Profile and only the latest run per job returned.
+Provider configuration is managed separately from Agent resource bindings. Each Agent can keep its own Hermes Provider/model configuration while credentials remain stored under the Agent/Profile Hermes home rather than being returned by Control Center APIs.
 
-## Agents and Projects
+## Manual plugin install
 
-Hermes Profiles are treated as Agents; Hermes Projects remain native profile-scoped Projects. The extension does not create a second Agent, Project, scheduler or task database.
-
-When `hermes project` is absent (as observed on Hermes v0.16.0), Project API reads return `supported: false`, mutations return structured 409 responses, Project model tools are not registered, and the Dashboard shows the unsupported state without exposing create controls. Agents, Tasks and WeChat remain available.
-
-## Install on Windows
+If Hermes is already installed and you do not want to use the unified Setup:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -72,9 +101,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\doctor.ps1 -Installed
 ```
 
-The installer detects the actual Hermes Python interpreter, verifies dependencies, stages the plugin, builds the modular Dashboard bundle, compiles Python, backs up the current extension/WeChat platform/config, atomically replaces code, enables plugins and runs installed doctor checks. Failed upgrades restore plugin files and Hermes plugin configuration.
-
-A first installation or Dashboard backend Python change should restart only `hermes dashboard`. Frontend-only updates can use Dashboard rescan. WeChat platform/runtime Python changes require restarting the relevant Gateway.
+The plugin installer detects the actual Hermes Python interpreter, installs Windows dependencies, stages the plugin, builds the Dashboard bundle, backs up the existing plugin/platform/config, atomically replaces the plugin, enables it, and rolls back on installation failure.
 
 ## Doctor modes
 
@@ -85,32 +112,24 @@ A first installation or Dashboard backend Python change should restart only `her
 .\doctor.ps1 -Installed -Json
 ```
 
-The default mode is `-Installed`.
-
 ## Release package
 
-The release workflow builds:
+Release builds produce:
 
 ```text
 Hermes-Control-Center-v0.5.1.zip
 Hermes-Control-Center-v0.5.1.zip.sha256
 ```
 
-The archive contains only this standalone Hermes extension tree, excludes tests and repository automation files, includes modular Dashboard source for maintainability and includes the generated single `dashboard/dist/index.js` plus `dashboard/dist/style.css` consumed by Hermes.
-
-## Validation
-
-CI covers Python compilation, Ruff, pytest, syntax checks for each Dashboard source module and the generated bundle, v0.5.1 UI/UX contract tests, no-auto-UIA WeChat tab behavior, context-aware refresh, visibility-aware auto-refresh, partial desktop results, focus trapping/restoration, custom confirmation dialogs, unsaved-change protection, mobile touch targets, strict Dashboard request bodies, Project compatibility behavior, fair Task scheduling, batched Cron history, cross-process WeChat locking, polling health/backoff, Windows installer syntax and Release ZIP isolation/SHA256 generation.
-
-A real WeChat acceptance test still requires native Windows with a logged-in WeChat client. CI cannot substitute for device-level UI Automation testing.
+The ZIP includes the one-click Setup, plugin installer, Dashboard source/bundle, Provider manager, resource discovery/bindings/policy, WeChat runtime/platform and all runtime files required for installation. Repository automation and tests are excluded from the packaged plugin tree.
 
 ## Security notes
 
+- Desktop resource bindings fail closed.
+- Agent browser/WeChat access is restricted to explicitly bound resources.
 - Default and active Profiles are protected from deletion.
-- Autonomous Agent tools do not expose Profile deletion or Gateway restart.
 - Human Dashboard destructive/runtime actions use explicit confirmation UI.
 - Profile/SOUL paths are validated against traversal.
-- Provider credentials/API keys are not exposed by Management Center.
-- WeChat outbound sends fail closed when exact-target verification or the cross-process UI lock cannot be obtained.
-- The Management Center exposes only a WeChat dry-run test, not an unguarded real-send UI.
+- Provider credentials are never returned in normal Control Center list responses.
+- WeChat sends fail closed when the bound window, exact target conversation or UI lock cannot be verified.
 - Keep Hermes Dashboard on localhost or behind trusted authentication/network controls.
