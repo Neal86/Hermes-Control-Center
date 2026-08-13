@@ -67,14 +67,19 @@ jobs:
           root = Path('$OUT')
           manifest = json.loads((root/'dashboard/manifest.json').read_text('utf-8'))
           assert manifest['entry'] == 'dist/index.js'
-          assert manifest['api'] == 'plugin_api.py'
+          assert manifest['api'] == 'plugin_api_extended.py'
           assert manifest['icon'] == 'Activity'
           required = [
               'plugin.yaml','__init__.py','install.ps1','doctor.ps1','compatibility.py','tools.py',
+              'Setup.cmd','Setup-Hermes-Control-Center.ps1',
               'dashboard/manifest.json','dashboard/build_bundle.py','dashboard/src/api.js',
               'dashboard/src/components.js','dashboard/src/app.js','dashboard/src/index.js',
               'dashboard/dist/index.js','dashboard/dist/style.css','dashboard/plugin_api.py',
+              'dashboard/plugin_api_extended.py',
               'management/overview.py','management/service.py','task_center/service_v3.py',
+              'providers/__init__.py','providers/service.py',
+              'resources/__init__.py','resources/discovery.py','resources/registry.py',
+              'resources/bindings.py','resources/policy.py','resources/browser.py',
               'wechat/adapter.py','wechat/runtime.py','platforms/wechat-desktop/plugin.yaml',
               'platforms/wechat-desktop/adapter.py'
           ]
@@ -91,7 +96,10 @@ jobs:
           unzip -l "release/hermes-control-center-v${VERSION}.zip" > /tmp/archive.txt
           ! grep -q "openakita" /tmp/archive.txt
           ! grep -q "/tests/" /tmp/archive.txt
+          grep -q "Setup-Hermes-Control-Center.ps1" /tmp/archive.txt
           grep -q "dashboard/dist/index.js" /tmp/archive.txt
+          grep -q "resources/bindings.py" /tmp/archive.txt
+          grep -q "providers/service.py" /tmp/archive.txt
           grep -q "wechat/runtime.py" /tmp/archive.txt
           grep -q "platforms/wechat-desktop/plugin.yaml" /tmp/archive.txt
 
@@ -112,4 +120,4 @@ jobs:
             "release/hermes-control-center-v${VERSION}.zip" \
             "release/hermes-control-center-v${VERSION}.zip.sha256" \
             --title "Hermes Control Center v${VERSION}" \
-            --notes "Standalone Hermes Control Center v${VERSION}: Management Center UI, Agents, Tasks, Projects compatibility, hardened Windows WeChat connector, transactional installer and doctor checks."
+            --notes "Hermes Control Center v${VERSION}: one-click Windows Setup, Hermes install/update management, Provider configuration, Agent resource isolation, Windows WeChat connector, browser bindings, task/project management, transactional plugin installer and doctor checks."
