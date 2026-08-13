@@ -9,6 +9,7 @@ $SetupScript = Join-Path $Root "Setup-Hermes-Control-Center.ps1"
 $HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA -and (Test-Path (Join-Path $env:LOCALAPPDATA "hermes"))) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
 $HermesVersionSource = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/pyproject.toml"
 $ControlCenterVersionSource = "https://raw.githubusercontent.com/Neal86/Hermes-Control-Center/main/plugin.yaml"
+$DashboardUrl = "http://127.0.0.1:9119"
 
 function Read-TextFileVersion {
     param([string]$Path)
@@ -87,13 +88,59 @@ function Invoke-SetupAction {
     Write-Host ("Running: " + $Action) -ForegroundColor Cyan
     Write-Host "------------------------------------------------------------"
 
-    # Send child output directly to the console instead of returning it from this
-    # function. Otherwise PowerShell collects every output line together with the
-    # integer return value, and the caller mistakenly treats the text as an exit code.
     & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $SetupScript -Action $Action 2>&1 | Out-Host
     $exitCode = $LASTEXITCODE
     if ($null -eq $exitCode) { $exitCode = 1 }
     return [int]$exitCode
+}
+
+function Test-LocalPort {
+    param([string]$HostName, [int]$Port, [int]$TimeoutMs = 500)
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        $async = $client.BeginConnect($HostName, $Port, $null, $null)
+        if (-not $async.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) { return $false }
+        $client.EndConnect($async)
+        return $client.Connected
+    } catch {
+        return $false
+    } finally {
+        $client.Close()
+    }
+}
+
+function Wait-AndOpenDashboard {
+    Write-Host ""
+    Write-Host "Waiting for Hermes Dashboard to become ready..." -ForegroundColor Cyan
+    $deadline = (Get-Date).AddSeconds(35)
+    $ready = $false
+    while ((Get-Date) -lt $deadline) {
+        if (Test-LocalPort -HostName "127.0.0.1" -Port 9119 -TimeoutMs 500) {
+            $ready = $true
+            break
+        }
+        Start-Sleep -Milliseconds 750
+    }
+
+    if (-not $ready) {
+        Write-Host "Dashboard did not become reachable on 127.0.0.1:9119 within 35 seconds." -ForegroundColor Red
+        $hermes = Get-Command hermes -ErrorAction SilentlyContinue
+        if ($hermes) {
+            Write-Host ""
+            Write-Host "Hermes dashboard status:" -ForegroundColor Yellow
+            & $hermes.Source dashboard --status 2>&1 | Out-Host
+        }
+        return $false
+    }
+
+    try {
+        Start-Process $DashboardUrl | Out-Null
+        Write-Host "Dashboard is ready. Opened $DashboardUrl in the default browser." -ForegroundColor Green
+        return $true
+    } catch {
+        Write-Host "Dashboard is ready at $DashboardUrl, but Windows could not open the default browser: $($_.Exception.Message)" -ForegroundColor Yellow
+        return $false
+    }
 }
 
 while ($true) {
@@ -119,9 +166,17 @@ while ($true) {
     }
 
     $code = Invoke-SetupAction $action
+    $dashboardOpened = $true
+    if ($code -eq 0 -and $action -eq "Dashboard") {
+        $dashboardOpened = Wait-AndOpenDashboard
+    }
+
     Write-Host ""
-    if ($code -eq 0) {
+    if ($code -eq 0 -and $dashboardOpened) {
         Write-Host "Operation finished successfully." -ForegroundColor Green
+    } elseif ($code -eq 0) {
+        Write-Host "Dashboard start command completed, but automatic browser opening was not fully successful." -ForegroundColor Yellow
+        Write-Host "The Setup menu will remain open." -ForegroundColor Yellow
     } else {
         Write-Host "Operation failed with exit code $code." -ForegroundColor Red
         Write-Host "The Setup menu will remain open." -ForegroundColor Yellow
