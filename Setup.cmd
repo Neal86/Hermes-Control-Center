@@ -10,6 +10,7 @@ if not "%ERRORLEVEL%"=="0" (
   pause
   exit /b %ERRORLEVEL%
 )
+set "HCC_LIVE_LOG_TAIL=1"
 set "LIVE_STOP=%TEMP%\hermes-control-center-live-%RANDOM%%RANDOM%.stop"
 if exist "%LIVE_STOP%" del /q "%LIVE_STOP%" >nul 2>&1
 start "" /b powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Live-Log-Tail.ps1" -StopFile "%LIVE_STOP%"
