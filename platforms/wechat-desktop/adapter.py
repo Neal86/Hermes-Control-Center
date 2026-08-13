@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import importlib.util
-import os
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve()
-PLUGIN_ROOT = HERE.parents[2]
-if str(PLUGIN_ROOT) not in sys.path:
-    sys.path.insert(0, str(PLUGIN_ROOT))
+# User platform plugins are installed flat under ~/.hermes/plugins/<name>.
+# The Control Center runtime is the sibling ~/.hermes/plugins/hermes-extensions.
+CONTROL_CENTER_ROOT = HERE.parent.parent / "hermes-extensions"
+if not CONTROL_CENTER_ROOT.is_dir():
+    raise RuntimeError(f"Hermes Control Center runtime not found at {CONTROL_CENTER_ROOT}")
+if str(CONTROL_CENTER_ROOT) not in sys.path:
+    sys.path.insert(0, str(CONTROL_CENTER_ROOT))
 
 from resources.context import current_agent  # noqa: E402
 from resources.wechat_bound import BoundWeChatDesktop  # noqa: E402
@@ -25,7 +28,11 @@ def _load_legacy():
         raise RuntimeError(f"Unable to load WeChat gateway adapter from {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(name, None)
+        raise
     return module
 
 
