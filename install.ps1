@@ -15,6 +15,11 @@ $PlatformTarget = Join-Path $PluginsRoot "platforms\wechat-desktop"
 $Requirements = Join-Path $Source "requirements-windows.txt"
 $HermesCommand = Get-Command hermes -ErrorAction SilentlyContinue
 
+function Write-Stage {
+    param([string]$Message)
+    Write-Host ("  -> " + $Message) -ForegroundColor Cyan
+}
+
 function Test-HermesCapability {
     param([string]$HermesExe, [string]$Command)
     try {
@@ -35,8 +40,6 @@ function Test-PythonCandidate {
 
 function Find-HermesPython {
     $candidates = New-Object System.Collections.Generic.List[string]
-
-    # Hermes official Windows installer v0.20+ uses hermes-agent\venv.
     foreach ($candidate in @(
         (Join-Path $HermesHome "hermes-agent\venv\Scripts\python.exe"),
         (Join-Path $HermesHome "hermes-agent\.venv\Scripts\python.exe"),
@@ -85,16 +88,29 @@ function Find-HermesPython {
     return $null
 }
 
-function Copy-PluginTree {
+function Copy-RuntimeTree {
     param([string]$From, [string]$To)
     New-Item -ItemType Directory -Force -Path $To | Out-Null
-    Get-ChildItem -LiteralPath $From -Force | Where-Object {
-        $_.Name -notin @(
-            ".git", ".github", "__pycache__", ".pytest_cache", "platforms", "tests", "release",
-            "Setup.cmd", "Setup-Hermes-Control-Center.ps1"
-        )
-    } | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination $To -Recurse -Force
+
+    $files = @(
+        "plugin.yaml", "__init__.py", "schemas.py", "tools.py", "compatibility.py", "doctor.ps1",
+        "requirements.txt", "requirements-windows.txt"
+    )
+    $dirs = @("dashboard", "management", "task_center", "providers", "resources", "wechat")
+
+    foreach ($rel in $files) {
+        $src = Join-Path $From $rel
+        if (Test-Path -LiteralPath $src) {
+            Write-Stage "Copying $rel"
+            Copy-Item -LiteralPath $src -Destination (Join-Path $To $rel) -Force
+        }
+    }
+    foreach ($rel in $dirs) {
+        $src = Join-Path $From $rel
+        if (Test-Path -LiteralPath $src) {
+            Write-Stage "Copying $rel\"
+            Copy-Item -LiteralPath $src -Destination (Join-Path $To $rel) -Recurse -Force
+        }
     }
 }
 
@@ -180,15 +196,23 @@ $BackupPlatform = Join-Path $TxnRoot "backup-wechat-desktop"
 
 try {
     Write-Host "Staging Hermes Control Center..."
-    Copy-PluginTree -From $Source -To $StagePlugin
+    Write-Stage "Preparing clean staging directory"
+    New-Item -ItemType Directory -Force -Path $StagePlugin | Out-Null
+
+    Write-Stage "Copying runtime files only"
+    Copy-RuntimeTree -From $Source -To $StagePlugin
+
+    Write-Stage "Copying WeChat platform adapter"
     New-Item -ItemType Directory -Force -Path $StagePlatform | Out-Null
     Get-ChildItem -LiteralPath $PlatformSource -Force | ForEach-Object {
         Copy-Item -LiteralPath $_.FullName -Destination $StagePlatform -Recurse -Force
     }
 
+    Write-Stage "Building Dashboard bundle"
     & $HermesPython (Join-Path $StagePlugin "dashboard\build_bundle.py") --root (Join-Path $StagePlugin "dashboard")
     if ($LASTEXITCODE -ne 0) { throw "Dashboard bundle build failed with exit code $LASTEXITCODE." }
 
+    Write-Stage "Validating staged files"
     foreach ($required in @(
         "plugin.yaml",
         "dashboard\manifest.json",
@@ -207,6 +231,11 @@ try {
         }
     }
 
+    Write-Stage "Compiling staged Python"
+    & $HermesPython -m compileall -q $StagePlugin
+    if ($LASTEXITCODE -ne 0) { throw "Python compile validation failed in staging." }
+
+    Write-Stage "Installing staged files"
     if (Test-Path -LiteralPath $Target) { Move-Item -LiteralPath $Target -Destination $BackupPlugin -Force }
     if (Test-Path -LiteralPath $PlatformTarget) { Move-Item -LiteralPath $PlatformTarget -Destination $BackupPlatform -Force }
     New-Item -ItemType Directory -Force -Path (Split-Path $PlatformTarget -Parent) | Out-Null
@@ -215,19 +244,22 @@ try {
 
     if (-not $NoEnable) {
         foreach ($PluginName in @("hermes-extensions", "wechat-desktop")) {
+            Write-Stage "Enabling $PluginName"
             & $HermesCommand.Source plugins enable $PluginName
             if ($LASTEXITCODE -ne 0) { throw "Hermes could not enable plugin '$PluginName'." }
         }
     }
 
+    Write-Stage "Verifying Hermes plugin discovery"
     $installedList = & $HermesCommand.Source plugins list --plain --no-bundled 2>&1 | Out-String
     if ($installedList -notmatch "hermes-extensions") { throw "Hermes did not discover hermes-extensions after installation." }
     if ($installedList -notmatch "wechat-desktop") { throw "Hermes did not discover wechat-desktop after installation." }
 
+    Write-Stage "Running installed doctor"
     & (Join-Path $Target "doctor.ps1") -Installed
     if ($LASTEXITCODE -ne 0) { throw "Installed doctor verification failed with exit code $LASTEXITCODE." }
 
-    Write-Host "Hermes Control Center v0.5.1 install complete."
+    Write-Host "Hermes Control Center v0.5.1 install complete." -ForegroundColor Green
 } catch {
     Write-Warning "Installation failed; restoring previous Control Center files."
     if (Test-Path -LiteralPath $Target) { Remove-Item -LiteralPath $Target -Recurse -Force -ErrorAction SilentlyContinue }
