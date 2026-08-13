@@ -193,6 +193,7 @@ def agent_action(args: dict, **kwargs) -> str:
         "use",
         "gateway_start",
         "gateway_stop",
+        "gateway_restart",
         "gateway_status",
         "set_workspace",
         "export",
