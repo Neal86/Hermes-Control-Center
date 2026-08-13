@@ -71,6 +71,7 @@ function Find-HermesPython {
 
 $HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA -and (Test-Path (Join-Path $env:LOCALAPPDATA "hermes"))) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
 $env:HERMES_HOME = $HermesHome
+$ConfigPath = Join-Path $HermesHome "config.yaml"
 $Hermes = Get-Command hermes -ErrorAction SilentlyContinue
 $HermesPython = Find-HermesPython -HermesCommand $Hermes -HermesHome $HermesHome
 $Report = [ordered]@{
@@ -135,10 +136,12 @@ if ($Installed) {
 
     $Report["plugin_enabled"] = $false
     $Report["wechat_plugin_enabled"] = $false
-    if ($HermesPython) {
+    $Report["plugins_enabled_entries"] = @()
+    if ($HermesPython -and (Test-Path -LiteralPath $ConfigPath)) {
         try {
-            $enabledJson = & $HermesPython -c "from hermes_cli.config import load_config; import json; c=load_config(); print(json.dumps((c.get('plugins') or {}).get('enabled') or []))" 2>$null | Select-Object -Last 1
+            $enabledJson = & $HermesPython -c "import json,sys,yaml; p=sys.argv[1]; c=yaml.safe_load(open(p,encoding='utf-8')) or {}; print(json.dumps(((c.get('plugins') or {}).get('enabled') or [])))" $ConfigPath 2>$null | Select-Object -Last 1
             $enabled = @($enabledJson | ConvertFrom-Json)
+            $Report["plugins_enabled_entries"] = @($enabled)
             $Report["plugin_enabled"] = $enabled -contains "hermes-extensions"
             $Report["wechat_plugin_enabled"] = $enabled -contains "wechat-desktop"
         } catch {}
@@ -177,8 +180,8 @@ if ($Installed) {
     )) {
         if (-not $Report[$key]) { $Errors.Add("Installed component missing or invalid: $key") }
     }
-    if (-not $Report.plugin_enabled) { $Errors.Add("hermes-extensions is not present in plugins.enabled.") }
-    if (-not $Report.wechat_plugin_enabled) { $Errors.Add("wechat-desktop is not present in plugins.enabled.") }
+    if (-not $Report.plugin_enabled) { $Errors.Add("hermes-extensions is not present in plugins.enabled in $ConfigPath.") }
+    if (-not $Report.wechat_plugin_enabled) { $Errors.Add("wechat-desktop is not present in plugins.enabled in $ConfigPath.") }
 }
 
 $Report["warnings"] = @($Warnings)
