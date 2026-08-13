@@ -68,9 +68,18 @@ function Find-HermesPython {
     return $null
 }
 
-if (-not (Get-Command hermes -ErrorAction SilentlyContinue)) { throw "Hermes is not installed or is not on PATH." }
+$HermesCommand = Get-Command hermes -ErrorAction SilentlyContinue
+if (-not $HermesCommand) { throw "Hermes is not installed or is not on PATH." }
 if (-not (Test-Path -LiteralPath $InnerInstaller)) { throw "Missing install.ps1" }
 if (-not (Test-Path -LiteralPath $Requirements)) { throw "Missing requirements-windows.txt" }
+
+Write-Host "Stopping any running Hermes Dashboard so updated plugin code cannot remain cached..." -ForegroundColor Cyan
+try {
+    & $HermesCommand.Source dashboard --stop 2>&1 | Out-Host
+} catch {
+    Write-Host "Dashboard stop returned a non-fatal error: $($_.Exception.Message)" -ForegroundColor DarkGray
+}
+Start-Sleep -Milliseconds 700
 
 $python = Find-HermesPython
 if (-not $python) { throw "Could not locate Hermes Python." }
@@ -96,4 +105,5 @@ $code = Run-Native -FilePath "powershell.exe" -Arguments $installerArgs -Label "
 if ($code -ne 0) { throw "Control Center installer failed with exit code $code. See logs under $LogDir." }
 
 Write-Host "Hermes Control Center installation completed successfully." -ForegroundColor Green
+Write-Host "Dashboard was stopped during upgrade. Use 'Open Hermes Dashboard' to start a fresh process with the new plugin." -ForegroundColor Green
 exit 0
