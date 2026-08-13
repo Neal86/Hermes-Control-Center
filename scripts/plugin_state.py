@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -45,6 +46,16 @@ def _write(config_path: Path, cfg: dict) -> None:
             pass
 
 
+def _remove_legacy_runtime(config_path: Path) -> None:
+    hermes_home = config_path.parent
+    for path in (
+        hermes_home / "plugins" / LEGACY,
+        hermes_home / "plugins" / "platforms" / LEGACY,
+    ):
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=False)
+
+
 def normalize(config_path: Path, mode: str = "finalize") -> None:
     raw = yaml.safe_load(config_path.read_text("utf-8")) if config_path.exists() else {}
     cfg = raw if isinstance(raw, dict) else {}
@@ -67,6 +78,9 @@ def normalize(config_path: Path, mode: str = "finalize") -> None:
     plugins["disabled"] = disabled
     _write(config_path, cfg)
 
+    if mode == "finalize":
+        _remove_legacy_runtime(config_path)
+
     verify = yaml.safe_load(config_path.read_text("utf-8")) or {}
     state = verify.get("plugins") or {}
     if PRIMARY in (state.get("disabled") or []):
@@ -75,6 +89,8 @@ def normalize(config_path: Path, mode: str = "finalize") -> None:
         raise RuntimeError(f"legacy standalone plugin entry still present: {LEGACY}")
     if mode == "finalize" and PRIMARY not in (state.get("enabled") or []):
         raise RuntimeError(f"missing from plugins.enabled: {PRIMARY}")
+    if mode == "finalize" and (config_path.parent / "plugins" / LEGACY).exists():
+        raise RuntimeError(f"legacy standalone plugin directory still exists: {LEGACY}")
 
 
 if __name__ == "__main__":
