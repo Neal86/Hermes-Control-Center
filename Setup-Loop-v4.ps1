@@ -5,10 +5,12 @@ Set-StrictMode -Version Latest
 $ProgressPreference = "SilentlyContinue"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$SetupScript = Join-Path $Root "Setup-Hermes-Control-Center-v2.ps1"
+$SetupScript = Join-Path $Root "Setup-Hermes-Control-Center.ps1"
 $DashboardScript = Join-Path $Root "Dashboard-Launch-v3.ps1"
-$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA -and (Test-Path (Join-Path $env:LOCALAPPDATA "hermes"))) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
+$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
 $env:HERMES_HOME = $HermesHome
+$HermesBin = Join-Path $HermesHome "hermes-agent\bin"
+if ((Test-Path -LiteralPath $HermesBin) -and (($env:PATH -split ';') -notcontains $HermesBin)) { $env:PATH = "$HermesBin;$env:PATH" }
 $HermesVersionSource = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/pyproject.toml"
 $ControlCenterVersionSource = "https://raw.githubusercontent.com/Neal86/Hermes-Control-Center/main/plugin.yaml"
 
@@ -39,9 +41,9 @@ function Get-RemoteVersion([string]$Uri, [string]$Pattern) {
     return $null
 }
 
-function Same-Version([string]$A, [string]$B) {
-    if (-not $A -or -not $B) { return $false }
-    try { return ([version](($A -split '[-+]',2)[0])) -eq ([version](($B -split '[-+]',2)[0])) } catch { return $A -eq $B }
+function Compare-Version([string]$A, [string]$B) {
+    if (-not $A -or -not $B) { return $null }
+    try { return ([version](($A -split '[-+]',2)[0])).CompareTo([version](($B -split '[-+]',2)[0])) } catch { return $null }
 }
 
 function Show-Menu {
@@ -51,6 +53,8 @@ function Show-Menu {
     $cInstalled = Read-VersionFile (Join-Path $HermesHome "plugins\hermes-extensions\plugin.yaml")
     $cLatest = Get-RemoteVersion $ControlCenterVersionSource '(?m)^version:\s*["'']?([^\s"'']+)["'']?\s*$'
     if (-not $cLatest) { $cLatest = Read-VersionFile (Join-Path $Root "plugin.yaml") }
+    $hc = Compare-Version $hInstalled $hLatest
+    $cc = Compare-Version $cInstalled $cLatest
 
     Write-Host "Hermes Control Center Setup" -ForegroundColor Green
     Write-Host "Hermes home: $HermesHome"
@@ -58,8 +62,8 @@ function Show-Menu {
     Write-Host ("Control Center: " + $(if ($cInstalled) { "v$cInstalled" } else { "not installed" }) + $(if ($cLatest) { "  latest v$cLatest" } else { "  latest unknown" }))
     Write-Host ""
     Write-Host "  1. Install / update everything"
-    Write-Host ("  2. Update Hermes only" + $(if (Same-Version $hInstalled $hLatest) { "  [already current]" } else { "" }))
-    Write-Host ("  3. Install / update Control Center only" + $(if (Same-Version $cInstalled $cLatest) { "  [already current]" } else { "" }))
+    Write-Host ("  2. Update Hermes only" + $(if ($null -ne $hc -and $hc -ge 0) { "  [already current]" } else { "" }))
+    Write-Host ("  3. Install / update Control Center only" + $(if ($null -ne $cc -and $cc -ge 0) { "  [already current]" } else { "" }))
     Write-Host "  4. Repair Control Center"
     Write-Host "  5. Open Hermes Dashboard"
     Write-Host "  6. Exit"
@@ -67,6 +71,10 @@ function Show-Menu {
 }
 
 function Run-Script([string]$Path, [string[]]$Arguments) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Write-Host "Missing required script: $Path" -ForegroundColor Red
+        return 2
+    }
     & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $Path @Arguments 2>&1 | Out-Host
     $code = $LASTEXITCODE
     if ($null -eq $code) { $code = 1 }
@@ -80,15 +88,11 @@ while ($true) {
 
     $code = 1
     switch ($choice) {
-        "1" { Write-Host "`nRunning: Install / update everything" -ForegroundColor Cyan; $code = Run-Script $SetupScript @("-Action","Install") }
-        "2" { Write-Host "`nRunning: Update Hermes" -ForegroundColor Cyan; $code = Run-Script $SetupScript @("-Action","UpdateHermes") }
-        "3" { Write-Host "`nRunning: Update Control Center" -ForegroundColor Cyan; $code = Run-Script $SetupScript @("-Action","UpdatePlugin") }
-        "4" { Write-Host "`nRunning: Repair Control Center" -ForegroundColor Cyan; $code = Run-Script $SetupScript @("-Action","Repair") }
-        "5" {
-            Write-Host "`nRunning: Open Hermes Dashboard" -ForegroundColor Cyan
-            if (-not (Test-Path -LiteralPath $DashboardScript)) { Write-Host "Missing Dashboard-Launch-v3.ps1" -ForegroundColor Red; $code = 2 }
-            else { $code = Run-Script $DashboardScript @() }
-        }
+        "1" { Write-Host "`nRunning: Install / update everything" -ForegroundColor Cyan; $code = Run-Script $SetupScript @("-Action","Install","-NoPrompt","-NoDashboard") }
+        "2" { Write-Host "`nRunning: Update Hermes" -ForegroundColor Cyan; $code = Run-Script $SetupScript @("-Action","UpdateHermes","-NoPrompt","-NoDashboard") }
+        "3" { Write-Host "`nRunning: Update Control Center" -ForegroundColor Cyan; $code = Run-Script $SetupScript @("-Action","UpdatePlugin","-NoPrompt","-NoDashboard") }
+        "4" { Write-Host "`nRunning: Repair Control Center" -ForegroundColor Cyan; $code = Run-Script $SetupScript @("-Action","Repair","-NoPrompt","-NoDashboard") }
+        "5" { Write-Host "`nRunning: Open Hermes Dashboard" -ForegroundColor Cyan; $code = Run-Script $DashboardScript @() }
         default { Write-Host "`nInvalid selection. Please choose 1-6." -ForegroundColor Yellow; [void](Read-Host "Press Enter to return to menu"); continue }
     }
 
