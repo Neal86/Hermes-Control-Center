@@ -67,11 +67,11 @@ function Test-IsHermesDashboardProcess {
     $exe = [string]$procInfo.ExecutablePath
     $cmd = [string]$procInfo.CommandLine
     $combined = ($name + " " + $exe + " " + $cmd).ToLowerInvariant()
-    $home = $HermesHome.ToLowerInvariant()
+    $hermesHomeLower = $HermesHome.ToLowerInvariant()
 
     if ($combined.Contains("hermes.exe") -and $combined.Contains("dashboard")) { return $true }
     if ($combined.Contains("hermes-agent") -and $combined.Contains("dashboard")) { return $true }
-    if ($combined.Contains($home) -and $combined.Contains("dashboard") -and $combined.Contains("hermes")) { return $true }
+    if ($combined.Contains($hermesHomeLower) -and $combined.Contains("dashboard") -and $combined.Contains("hermes")) { return $true }
     return $false
 }
 
