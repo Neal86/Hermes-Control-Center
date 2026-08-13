@@ -25,7 +25,7 @@ class ResourceBindings:
         try:
             payload = json.loads(self.path.read_text("utf-8"))
             bindings = payload.get("bindings", {}) if isinstance(payload, dict) else {}
-            return {str(k): str(v) for k, v in bindings.items() if k and v}
+            return {str(k): str(v).strip().lower() for k, v in bindings.items() if k and v}
         except (OSError, json.JSONDecodeError):
             return {}
 
@@ -49,13 +49,38 @@ class ResourceBindings:
         resource = self.registry.get(resource_id, refresh=True)
         if not resource:
             raise ValueError("unknown desktop resource")
+        if not resource.get("online"):
+            raise ValueError("desktop resource is offline")
         agent = str(agent or "").strip().lower()
         if not agent:
             raise ValueError("agent is required")
+
+        kind = str(resource.get("kind") or "").strip().lower()
+        if not kind:
+            raise ValueError("desktop resource has no kind")
+
         bindings = self._read()
+        # Exact ownership: one resource belongs to at most one Agent, and one
+        # Agent has at most one resource of each kind. Rebinding a new browser
+        # or WeChat instance atomically replaces that Agent's previous same-kind
+        # binding so runtime resolution is deterministic.
+        rows = {str(row.get("id")): row for row in self.registry.list(refresh=False)}
+        replaced: list[str] = []
+        for existing_id, existing_agent in list(bindings.items()):
+            if existing_id == resource_id or existing_agent != agent:
+                continue
+            existing = rows.get(existing_id)
+            if existing and str(existing.get("kind") or "").strip().lower() == kind:
+                bindings.pop(existing_id, None)
+                replaced.append(existing_id)
+
         bindings[resource_id] = agent
         self._write(bindings)
-        return {"resource": dict(resource, assigned_agent=agent), "agent": agent}
+        return {
+            "resource": dict(resource, assigned_agent=agent),
+            "agent": agent,
+            "replaced": replaced,
+        }
 
     def unbind(self, resource_id: str) -> bool:
         bindings = self._read()
@@ -68,21 +93,27 @@ class ResourceBindings:
         agent = str(agent or "").strip().lower()
         bindings = self._read()
         rows = self.registry.list(refresh=refresh)
-        return [dict(row, assigned_agent=bindings.get(str(row.get("id")))) for row in rows if bindings.get(str(row.get("id"))) == agent and (kind is None or row.get("kind") == kind)]
+        return [
+            dict(row, assigned_agent=bindings.get(str(row.get("id"))))
+            for row in rows
+            if bindings.get(str(row.get("id"))) == agent
+            and (kind is None or row.get("kind") == kind)
+        ]
 
     def require(self, agent: str, kind: str, *, ready: bool = True) -> dict[str, Any]:
         rows = self.resources_for_agent(agent, kind=kind, refresh=True)
         if not rows:
             raise ResourceAccessError(f"Agent '{agent}' has no bound {kind} resource")
-        online = [row for row in rows if row.get("online")]
-        if not online:
+        if len(rows) > 1:
+            raise ResourceAccessError(
+                f"Agent '{agent}' has multiple bound {kind} resources; rebind one resource to repair the ambiguous state"
+            )
+        row = rows[0]
+        if not row.get("online"):
             raise ResourceAccessError(f"Agent '{agent}' bound {kind} resource is offline")
-        if ready:
-            usable = [row for row in online if row.get("status") == "ready"]
-            if not usable:
-                raise ResourceAccessError(f"Agent '{agent}' bound {kind} resource is not ready")
-            return usable[0]
-        return online[0]
+        if ready and row.get("status") != "ready":
+            raise ResourceAccessError(f"Agent '{agent}' bound {kind} resource is not ready")
+        return row
 
     def authorize(self, agent: str, resource_id: str, *, kind: str | None = None, ready: bool = True) -> dict[str, Any]:
         agent = str(agent or "").strip().lower()
