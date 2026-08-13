@@ -6,6 +6,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+try:
+    from hermes_constants import get_hermes_home
+except Exception:
+    get_hermes_home = None
+
 _PROVIDER_ENV = {
     "openai": "OPENAI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
@@ -21,6 +26,7 @@ _PROVIDER_ENV = {
     "moonshot": "MOONSHOT_API_KEY",
     "kimi": "MOONSHOT_API_KEY",
     "minimax": "MINIMAX_API_KEY",
+    "custom": "HERMES_CUSTOM_PROVIDER_API_KEY",
 }
 
 _PROVIDER_LABELS = {
@@ -35,35 +41,46 @@ _PROVIDER_LABELS = {
     "mistral": "Mistral",
     "moonshot": "Kimi / Moonshot",
     "minimax": "MiniMax",
-    "custom": "Custom OpenAI-compatible endpoint",
+    "custom": "Custom OpenAI-compatible Provider",
     "nous": "Nous Portal OAuth",
     "opencode": "OpenCode",
 }
 
 
-class ProviderService:
-    """Profile-aware provider settings managed without exposing stored secrets.
+def _default_hermes_home() -> Path:
+    explicit = str(os.environ.get("HERMES_HOME") or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    if get_hermes_home is not None:
+        try:
+            return Path(get_hermes_home()).expanduser()
+        except Exception:
+            pass
+    local = str(os.environ.get("LOCALAPPDATA") or "").strip()
+    if local:
+        candidate = Path(local) / "hermes"
+        if candidate.exists():
+            return candidate
+    return Path.home() / ".hermes"
 
-    API keys are written to the selected Hermes profile's .env so Hermes itself
-    consumes them. Non-secret endpoint metadata is also mirrored in plugin data
-    for the Control Center UI. OAuth-only providers are represented as external
-    authentication modes and never fake a successful login.
-    """
+
+class ProviderService:
+    """Profile-aware provider settings without exposing stored secrets."""
 
     def __init__(self, hermes_home: Path | None = None) -> None:
-        self.hermes_home = (hermes_home or Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")).expanduser().resolve()
+        self.hermes_home = (hermes_home or _default_hermes_home()).expanduser().resolve()
         self.data_root = self.hermes_home / "plugin-data" / "hermes-extensions" / "providers"
         self.data_root.mkdir(parents=True, exist_ok=True)
         self.path = self.data_root / "providers.json"
 
     def _profile_home(self, profile: str) -> Path:
         name = str(profile or "default").strip().lower()
-        if name == "default":
+        if not name or name == "default":
             home = self.hermes_home
         else:
-            home = (self.hermes_home / "profiles" / name).resolve()
             profiles_root = (self.hermes_home / "profiles").resolve()
-            if profiles_root not in home.parents:
+            home = (profiles_root / name).resolve()
+            if profiles_root != home.parent and profiles_root not in home.parents:
                 raise ValueError("invalid profile")
         home.mkdir(parents=True, exist_ok=True)
         return home
@@ -76,6 +93,7 @@ class ProviderService:
                 "label": label,
                 "auth": "oauth" if provider in {"nous", "opencode"} else "api_key",
                 "supports_base_url": provider in {"openai", "openrouter", "custom"},
+                "supports_custom_name": provider == "custom",
                 "env_key": _PROVIDER_ENV.get(provider),
             })
         return rows
@@ -122,11 +140,10 @@ class ProviderService:
     def _update_env(self, profile: str, updates: dict[str, str | None]) -> None:
         home = self._profile_home(profile)
         path = home / ".env"
-        current_lines: list[str] = []
         try:
             current_lines = path.read_text("utf-8").splitlines()
         except OSError:
-            pass
+            current_lines = []
         wanted = set(updates)
         output: list[str] = []
         seen: set[str] = set()
@@ -165,8 +182,11 @@ class ProviderService:
             provider = item["id"]
             env_key = item.get("env_key")
             stored = meta.get(provider, {}) if isinstance(meta, dict) else {}
+            label = str(stored.get("custom_name") or item["label"]) if provider == "custom" else item["label"]
             rows.append({
                 **item,
+                "label": label,
+                "custom_name": str(stored.get("custom_name") or ""),
                 "configured": bool(env_key and env.get(str(env_key))) or bool(stored.get("configured")),
                 "has_api_key": bool(env_key and env.get(str(env_key))),
                 "base_url": str(stored.get("base_url") or ""),
@@ -179,7 +199,7 @@ class ProviderService:
         provider = str(provider or "").strip().lower()
         if provider not in _PROVIDER_LABELS:
             raise ValueError("unsupported provider")
-        profile = str(profile or "default").strip().lower()
+        profile = str(profile or "default").strip().lower() or "default"
         env_key = _PROVIDER_ENV.get(provider)
         api_key = data.get("api_key")
         clear_key = bool(data.get("clear_api_key"))
@@ -191,10 +211,18 @@ class ProviderService:
 
         payload = self._read_meta()
         by_profile = payload.setdefault(profile, {})
+        if not isinstance(by_profile, dict):
+            by_profile = {}
+            payload[profile] = by_profile
         current = by_profile.setdefault(provider, {})
+        if not isinstance(current, dict):
+            current = {}
+            by_profile[provider] = current
         for key in ("base_url", "default_model"):
             if key in data:
                 current[key] = str(data.get(key) or "").strip()
+        if provider == "custom" and "custom_name" in data:
+            current["custom_name"] = str(data.get("custom_name") or "").strip()[:128]
         if provider in {"nous", "opencode"}:
             current["configured"] = bool(data.get("configured", current.get("configured", False)))
             current["oauth_status"] = str(data.get("oauth_status") or current.get("oauth_status") or "external_login_required")
