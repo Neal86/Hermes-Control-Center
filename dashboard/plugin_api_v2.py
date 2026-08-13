@@ -12,7 +12,7 @@ PLUGIN_ROOT = DASHBOARD_ROOT.parent
 if str(DASHBOARD_ROOT) not in sys.path:
     sys.path.insert(0, str(DASHBOARD_ROOT))
 
-from backend_packages import load_module
+from backend_packages_v2 import load_module
 
 
 def _load_file(path: Path, name: str):
