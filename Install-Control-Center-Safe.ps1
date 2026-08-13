@@ -15,6 +15,7 @@ $LogDir = Join-Path $HermesHome "logs\control-center"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 function Show-Tail([string]$Path, [int]$Lines = 120) {
+    if ($env:HCC_LIVE_LOG_TAIL -eq "1") { return }
     if (Test-Path -LiteralPath $Path) {
         Get-Content -LiteralPath $Path -Tail $Lines -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ([string]$_) }
     }
