@@ -40,6 +40,7 @@ function Find-HermesPython {
         if ($base) {
             $candidates.Add((Join-Path $base "uv\tools\hermes-agent\Scripts\python.exe"))
             $candidates.Add((Join-Path $base "hermes\.venv\Scripts\python.exe"))
+            $candidates.Add((Join-Path $base "hermes\hermes-agent\.venv\Scripts\python.exe"))
         }
     }
     $candidates.Add((Join-Path $HermesHome "hermes-agent\.venv\Scripts\python.exe"))
@@ -75,7 +76,10 @@ function Copy-PluginTree {
     param([string]$From, [string]$To)
     New-Item -ItemType Directory -Force -Path $To | Out-Null
     Get-ChildItem -LiteralPath $From -Force | Where-Object {
-        $_.Name -notin @(".git", "__pycache__", ".pytest_cache", "platforms", "tests")
+        $_.Name -notin @(
+            ".git", ".github", "__pycache__", ".pytest_cache", "platforms", "tests", "release",
+            "Setup.cmd", "Setup-Hermes-Control-Center.ps1"
+        )
     } | ForEach-Object {
         Copy-Item -LiteralPath $_.FullName -Destination $To -Recurse -Force
     }
@@ -91,6 +95,7 @@ $RequiredPaths = @(
     "plugin.yaml",
     "dashboard\manifest.json",
     "dashboard\plugin_api.py",
+    "dashboard\plugin_api_extended.py",
     "dashboard\build_bundle.py",
     "dashboard\src\api.js",
     "dashboard\src\components.js",
@@ -99,16 +104,25 @@ $RequiredPaths = @(
     "doctor.ps1",
     "compatibility.py",
     "management\overview.py",
+    "management\service.py",
     "task_center\service_v3.py",
+    "providers\__init__.py",
+    "providers\service.py",
+    "resources\__init__.py",
+    "resources\discovery.py",
+    "resources\registry.py",
+    "resources\bindings.py",
+    "resources\policy.py",
+    "resources\browser.py",
     "wechat\adapter.py",
     "wechat\runtime.py",
     "requirements-windows.txt"
 )
 foreach ($rel in $RequiredPaths) {
     $path = Join-Path $Source $rel
-    if (-not (Test-Path -LiteralPath $path)) { throw "Hermes Extensions package is incomplete: missing $path" }
+    if (-not (Test-Path -LiteralPath $path)) { throw "Hermes Control Center package is incomplete: missing $path" }
 }
-if (-not (Test-Path -LiteralPath (Join-Path $PlatformSource "plugin.yaml"))) { throw "Hermes Extensions package is incomplete: missing WeChat platform manifest" }
+if (-not (Test-Path -LiteralPath (Join-Path $PlatformSource "plugin.yaml"))) { throw "Hermes Control Center package is incomplete: missing WeChat platform manifest" }
 
 $Capabilities = [ordered]@{ hermes = [bool]$HermesCommand; plugins = $false; dashboard = $false; profile = $false; project = $false; cron = $false; kanban = $false }
 if ($HermesCommand) {
@@ -119,7 +133,7 @@ if ($HermesCommand) {
 Write-Host "Hermes home: $HermesHome"
 Write-Host "Detected Hermes capabilities:"
 $Capabilities.GetEnumerator() | ForEach-Object { Write-Host ("  {0,-10} {1}" -f $_.Key, $_.Value) }
-if (-not $Capabilities.project) { Write-Warning "Native 'hermes project' is unavailable. Projects will be disabled; Agents, Tasks and WeChat remain available." }
+if (-not $Capabilities.project) { Write-Warning "Native 'hermes project' is unavailable. Projects will be disabled; Agents, Tasks, Providers, Resources and WeChat remain available." }
 if (-not $Capabilities.profile) { throw "This Hermes build does not expose profile management; installation aborted." }
 if (-not $Capabilities.plugins) { throw "This Hermes build does not expose plugin management; installation aborted." }
 
@@ -153,7 +167,7 @@ if ($LASTEXITCODE -ne 0) { throw "Shared dependency import validation failed." }
 if ($LASTEXITCODE -ne 0) { throw "Windows WeChat dependency import validation failed." }
 
 New-Item -ItemType Directory -Force -Path $PluginsRoot | Out-Null
-$TxnRoot = Join-Path $PluginsRoot (".hermes-extensions-txn-" + [Guid]::NewGuid().ToString("N"))
+$TxnRoot = Join-Path $PluginsRoot (".hermes-control-center-txn-" + [Guid]::NewGuid().ToString("N"))
 $StagePlugin = Join-Path $TxnRoot "stage\hermes-extensions"
 $StagePlatform = Join-Path $TxnRoot "stage\wechat-desktop"
 $BackupPlugin = Join-Path $TxnRoot "backup\hermes-extensions"
@@ -165,7 +179,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path $BackupPlugin -Parent) | O
 if ($ConfigExisted) { Copy-Item -LiteralPath $ConfigPath -Destination $BackupConfig -Force }
 
 try {
-    Write-Host "Staging Hermes Extensions..."
+    Write-Host "Staging Hermes Control Center..."
     Copy-PluginTree -From $Source -To $StagePlugin
     & $HermesPython (Join-Path $StagePlugin "dashboard\build_bundle.py") --root (Join-Path $StagePlugin "dashboard")
     if ($LASTEXITCODE -ne 0) { throw "Dashboard bundle build failed with exit code $LASTEXITCODE." }
@@ -177,9 +191,13 @@ try {
         (Join-Path $StagePlugin "plugin.yaml"),
         (Join-Path $StagePlugin "dashboard\manifest.json"),
         (Join-Path $StagePlugin "dashboard\dist\index.js"),
-        (Join-Path $StagePlugin "dashboard\plugin_api.py"),
+        (Join-Path $StagePlugin "dashboard\plugin_api_extended.py"),
         (Join-Path $StagePlugin "management\overview.py"),
         (Join-Path $StagePlugin "task_center\service_v3.py"),
+        (Join-Path $StagePlugin "providers\service.py"),
+        (Join-Path $StagePlugin "resources\bindings.py"),
+        (Join-Path $StagePlugin "resources\policy.py"),
+        (Join-Path $StagePlugin "resources\browser.py"),
         (Join-Path $StagePlugin "wechat\runtime.py"),
         (Join-Path $StagePlatform "plugin.yaml")
     )) {
@@ -189,7 +207,7 @@ try {
     & $HermesPython -m compileall -q $StagePlugin
     if ($LASTEXITCODE -ne 0) { throw "Python compile validation failed in staging." }
 
-    if (Test-Path -LiteralPath $Target) { Write-Host "Backing up current Hermes Extensions..."; Move-Item -LiteralPath $Target -Destination $BackupPlugin -Force }
+    if (Test-Path -LiteralPath $Target) { Write-Host "Backing up current Hermes Control Center..."; Move-Item -LiteralPath $Target -Destination $BackupPlugin -Force }
     if (Test-Path -LiteralPath $PlatformTarget) { Move-Item -LiteralPath $PlatformTarget -Destination $BackupPlatform -Force }
 
     New-Item -ItemType Directory -Force -Path (Split-Path $PlatformTarget -Parent) | Out-Null
@@ -222,10 +240,10 @@ try {
     & (Join-Path $Target "doctor.ps1") -Installed
     if ($LASTEXITCODE -ne 0) { throw "Installed doctor verification failed with exit code $LASTEXITCODE." }
 
-    Write-Host "Hermes Extensions v0.5.1 install complete."
+    Write-Host "Hermes Control Center v0.5.1 install complete."
     Write-Host "Dashboard hot rescan: $DashboardRescanned"
-    if (-not $Capabilities.project) { Write-Host "Projects: disabled for this Hermes build; Dashboard support can refresh after upgrade, while model Project tools require Hermes/plugin reload." }
-    Write-Host "If dashboard backend code changed, restart only 'hermes dashboard'."
+    if (-not $Capabilities.project) { Write-Host "Projects: disabled for this Hermes build; the rest of Control Center remains available." }
+    Write-Host "If Dashboard backend code changed, restart only 'hermes dashboard'."
     Write-Host "For WeChat platform Python changes, restart the relevant Hermes gateway."
 } catch {
     Write-Error "Installation failed; rolling back previous plugin files and Hermes plugin configuration. $($_.Exception.Message)"
