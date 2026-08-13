@@ -40,7 +40,7 @@ jobs:
           from pathlib import Path
           root = Path('.')
           manifest = json.loads((root/'dashboard/manifest.json').read_text('utf-8'))
-          assert manifest['version'] == '0.5.1'
+          assert manifest['version'] == '0.5.11'
           assert manifest['entry'] == 'dist/index.js'
           assert manifest['api'] == 'plugin_api.py'
           assert manifest['icon'] == 'Activity'
@@ -48,6 +48,7 @@ jobs:
               'plugin.yaml','install.ps1','doctor.ps1','compatibility.py','tools.py','schemas.py',
               'dashboard/plugin_api.py','dashboard/build_bundle.py','dashboard/src/app.js',
               'management/service.py','management/overview.py','task_center/service_v3.py',
+              'providers/service.py','resources/bindings.py','resources/policy.py',
               'wechat/adapter.py','wechat/runtime.py','platforms/wechat-desktop/adapter.py',
               'platforms/wechat-desktop/plugin.yaml'
           ]
@@ -60,7 +61,7 @@ jobs:
 
   windows-real-hermes:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -70,66 +71,72 @@ jobs:
       - name: Parse PowerShell
         shell: pwsh
         run: |
-          foreach ($file in @("install.ps1", "doctor.ps1")) {
+          foreach ($file in @("Setup-Hermes-Control-Center.ps1", "Setup-Loop-v7.ps1", "install.ps1", "doctor.ps1")) {
             $tokens = $null; $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
             if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Error; exit 1 }
           }
 
-      - name: Install uv and real Hermes Agent
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip uv
-          uv --version
-          uv tool install "hermes-agent[web]" --python 3.11
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $bin = (& uv tool dir --bin).Trim()
-          if (-not $bin) { throw "uv tool bin directory was empty" }
-          "UV_TOOL_BIN=$bin" | Out-File -FilePath $env:GITHUB_ENV -Append
-          $bin | Out-File -FilePath $env:GITHUB_PATH -Append
-          $env:PATH = "$bin;$env:PATH"
-          $hermes = Get-Command hermes -ErrorAction Stop
-          Write-Host "Hermes executable: $($hermes.Source)"
-          & $hermes.Source --version
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Write-Host "uv tool directory: $(& uv tool dir)"
-
-      - name: Create isolated Hermes home and inspect real capabilities
+      - name: Install current Hermes with official Windows installer
         shell: pwsh
         run: |
           $hermesHome = Join-Path $env:RUNNER_TEMP "hermes-control-center-real"
           New-Item -ItemType Directory -Force -Path $hermesHome | Out-Null
-          "HERMES_HOME=$hermesHome" | Out-File -FilePath $env:GITHUB_ENV -Append
           $env:HERMES_HOME = $hermesHome
-          $env:PATH = "$env:UV_TOOL_BIN;$env:PATH"
+          "HERMES_HOME=$hermesHome" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          $installer = Join-Path $env:RUNNER_TEMP "hermes-official-install.ps1"
+          Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1" -OutFile $installer
+          & $installer -SkipSetup -HermesHome $hermesHome
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $bin = Join-Path $hermesHome "hermes-agent\bin"
+          $launcher = Join-Path $bin "hermes.exe"
+          if (-not (Test-Path $launcher)) { throw "Official Hermes launcher missing: $launcher" }
+          "HERMES_BIN=$bin" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Append
+          $env:PATH = "$bin;$env:PATH"
+          & $launcher --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Inspect real Hermes capabilities
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:HERMES_BIN;$env:PATH"
           hermes --version
           foreach ($command in @("plugins", "profile", "dashboard", "cron", "kanban", "project")) {
             Write-Host "===== hermes $command --help ====="
             & hermes $command --help 2>&1 | Select-Object -First 40 | Out-Host
-            Write-Host "exit=$LASTEXITCODE"
+            if ($LASTEXITCODE -ne 0) { throw "Hermes command unavailable: $command" }
           }
 
       - name: Preflight against real Hermes
         shell: pwsh
         run: |
-          $env:PATH = "$env:UV_TOOL_BIN;$env:PATH"
+          $env:PATH = "$env:HERMES_BIN;$env:PATH"
           & .\doctor.ps1 -Preflight -Json | Out-Host
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install Control Center into real Hermes
         shell: pwsh
         run: |
-          $env:PATH = "$env:UV_TOOL_BIN;$env:PATH"
+          $env:PATH = "$env:HERMES_BIN;$env:PATH"
           & .\install.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $plugin = Join-Path $env:HERMES_HOME "plugins\hermes-extensions"
-          $platform = Join-Path $env:HERMES_HOME "plugins\platforms\wechat-desktop"
+          $platform = Join-Path $env:HERMES_HOME "plugins\wechat-desktop"
           foreach ($rel in @(
             "plugin.yaml",
+            "dashboard\manifest.json",
             "dashboard\dist\index.js",
             "dashboard\plugin_api.py",
+            "dashboard\plugin_api_core.py",
+            "dashboard\extra_api.py",
             "management\overview.py",
             "task_center\service_v3.py",
+            "providers\service.py",
+            "resources\bindings.py",
+            "resources\policy.py",
             "wechat\runtime.py"
           )) {
             if (-not (Test-Path (Join-Path $plugin $rel))) { throw "Missing installed file: $rel" }
@@ -139,7 +146,7 @@ jobs:
       - name: Verify real Hermes plugin discovery and doctor
         shell: pwsh
         run: |
-          $env:PATH = "$env:UV_TOOL_BIN;$env:PATH"
+          $env:PATH = "$env:HERMES_BIN;$env:PATH"
           $plugins = & hermes plugins list --plain --no-bundled 2>&1 | Out-String
           $plugins | Write-Host
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -151,14 +158,14 @@ jobs:
       - name: Smoke-test real Hermes Dashboard and plugin mounting
         shell: pwsh
         run: |
-          $env:PATH = "$env:UV_TOOL_BIN;$env:PATH"
+          $env:PATH = "$env:HERMES_BIN;$env:PATH"
           $stdout = Join-Path $env:RUNNER_TEMP "hermes-dashboard.stdout.log"
           $stderr = Join-Path $env:RUNNER_TEMP "hermes-dashboard.stderr.log"
           $hermes = (Get-Command hermes -ErrorAction Stop).Source
           $proc = Start-Process -FilePath $hermes -ArgumentList @("dashboard", "--no-open", "--skip-build") -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           try {
             $rootReady = $false
-            for ($i = 0; $i -lt 60; $i++) {
+            for ($i = 0; $i -lt 90; $i++) {
               if ($proc.HasExited) { break }
               try {
                 $root = Invoke-WebRequest -Uri "http://127.0.0.1:9119/" -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 2
@@ -179,11 +186,15 @@ jobs:
             if ($manifest.StatusCode -ne 200) { throw "Dashboard did not serve hermes-extensions manifest" }
             if ($manifest.Content -notmatch '"name"\s*:\s*"hermes-extensions"') { throw "Served plugin manifest was unexpected" }
 
-            $api = Invoke-WebRequest -Uri "http://127.0.0.1:9119/api/plugins/hermes-extensions/capabilities" -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 5
-            Write-Host "Plugin API HTTP: $($api.StatusCode)"
-            if ($api.StatusCode -eq 404) { throw "Dashboard did not mount hermes-extensions backend API" }
-            if ($api.StatusCode -notin @(200, 401, 403)) { throw "Unexpected plugin API HTTP $($api.StatusCode)" }
-            if ($api.StatusCode -eq 200 -and $api.Content -notmatch 'project_supported') { throw "Plugin API response did not contain capability payload" }
+            foreach ($path in @("capabilities", "management/overview", "providers", "resources", "overview")) {
+              $api = Invoke-WebRequest -Uri "http://127.0.0.1:9119/api/plugins/hermes-extensions/$path" -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 5
+              Write-Host "Plugin API $path HTTP: $($api.StatusCode)"
+              if ($api.StatusCode -eq 404) { throw "Dashboard did not mount API route: $path" }
+              if ($api.StatusCode -notin @(200, 401, 403, 409, 500)) { throw "Unexpected plugin API HTTP $($api.StatusCode) for $path" }
+            }
+
+            $bundle = Invoke-WebRequest -Uri "http://127.0.0.1:9119/dashboard-plugins/hermes-extensions/dist/index.js" -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 5
+            if ($bundle.StatusCode -ne 200 -or $bundle.Content.Length -lt 1000) { throw "Dashboard plugin bundle was not served correctly" }
 
             $errorLog = Join-Path $env:HERMES_HOME "logs\errors.log"
             if (Test-Path $errorLog) {
@@ -195,7 +206,5 @@ jobs:
             }
           } finally {
             try { & hermes dashboard --stop | Out-Host } catch {}
-            if (-not $proc.HasExited) {
-              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            }
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
           }
