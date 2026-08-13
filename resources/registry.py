@@ -7,13 +7,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .context import root_hermes_home
 from .discovery import discover_resources
 
 
 class ResourceRegistry:
     def __init__(self, root: Path | None = None) -> None:
-        hermes_home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
-        self.root = (root or hermes_home / "plugin-data" / "hermes-extensions" / "resources").expanduser()
+        self.root = (root or root_hermes_home() / "plugin-data" / "hermes-extensions" / "resources").expanduser()
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "resources.json"
 
