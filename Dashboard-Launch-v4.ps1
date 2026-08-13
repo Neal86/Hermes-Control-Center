@@ -115,6 +115,70 @@ function Find-FreePort {
     return 0
 }
 
+function Show-RuntimeDiagnostics {
+    param([int]$Port)
+    Write-Host "" 
+    Write-Host "Hermes runtime diagnostics" -ForegroundColor Yellow
+    Write-Host "--------------------------" -ForegroundColor Yellow
+
+    $installedManifest = Join-Path $HermesHome "plugins\hermes-extensions\dashboard\manifest.json"
+    if (Test-Path -LiteralPath $installedManifest) {
+        try {
+            $manifest = Get-Content -LiteralPath $installedManifest -Raw -Encoding UTF8 | ConvertFrom-Json
+            Write-Host ("Installed dashboard manifest api: " + [string]$manifest.api)
+            Write-Host ("Installed dashboard manifest name: " + [string]$manifest.name)
+            Write-Host ("Installed dashboard manifest version: " + [string]$manifest.version)
+        } catch {
+            Write-Host ("Could not parse installed dashboard manifest: " + $_.Exception.Message)
+        }
+    } else {
+        Write-Host "Installed dashboard manifest is missing."
+    }
+
+    try {
+        $pluginsUrl = "http://127.0.0.1:$Port/api/dashboard/plugins"
+        $pluginsResponse = Invoke-WebRequest -Uri $pluginsUrl -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 4
+        Write-Host ("Dashboard plugin discovery HTTP: " + [int]$pluginsResponse.StatusCode)
+        if ($pluginsResponse.Content) {
+            $text = [string]$pluginsResponse.Content
+            if ($text.Length -gt 4000) { $text = $text.Substring(0,4000) + "..." }
+            Write-Host "Dashboard plugin discovery response:"
+            Write-Host $text
+        }
+    } catch {
+        Write-Host ("Dashboard plugin discovery request failed: " + $_.Exception.Message)
+    }
+
+    $errorsLog = Join-Path $HermesHome "logs\errors.log"
+    if (Test-Path -LiteralPath $errorsLog) {
+        Write-Host ""
+        Write-Host "Relevant Hermes errors.log entries:" -ForegroundColor Yellow
+        $all = @(Get-Content -LiteralPath $errorsLog -Tail 500 -ErrorAction SilentlyContinue)
+        $matches = New-Object System.Collections.Generic.List[string]
+        for ($i = 0; $i -lt $all.Count; $i++) {
+            $lineText = [string]$all[$i]
+            if ($lineText -match 'hermes-extensions|Failed to load plugin|plugin_api|dashboard plugin') {
+                $start = [Math]::Max(0, $i - 3)
+                $end = [Math]::Min($all.Count - 1, $i + 12)
+                for ($j = $start; $j -le $end; $j++) {
+                    $entry = [string]$all[$j]
+                    if (-not $matches.Contains($entry)) { $matches.Add($entry) }
+                }
+            }
+        }
+        if ($matches.Count -gt 0) {
+            $matches | ForEach-Object { Write-Host $_ }
+        } else {
+            Write-Host "No hermes-extensions/plugin API error was found in the last 500 lines."
+            Write-Host "Last 80 lines of errors.log:"
+            $all | Select-Object -Last 80 | ForEach-Object { Write-Host $_ }
+        }
+    } else {
+        Write-Host "Hermes errors.log does not exist at $errorsLog"
+    }
+    Write-Host "--------------------------" -ForegroundColor Yellow
+}
+
 $hermes = Find-Hermes
 if (-not $hermes) { throw "Hermes is not installed or its launcher could not be found." }
 
@@ -186,6 +250,7 @@ while ((Get-Date) -lt $deadline) {
     if ($proc.HasExited) {
         if (Test-Path $StdoutLog) { Get-Content $StdoutLog -Tail 160 | Out-Host }
         if (Test-Path $StderrLog) { Get-Content $StderrLog -Tail 160 | Out-Host }
+        Show-RuntimeDiagnostics -Port $Port
         throw "Hermes Dashboard exited before Control Center API became ready."
     }
     Start-Sleep -Milliseconds 500
@@ -193,5 +258,6 @@ while ((Get-Date) -lt $deadline) {
 
 if (Test-Path $StdoutLog) { Get-Content $StdoutLog -Tail 160 | Out-Host }
 if (Test-Path $StderrLog) { Get-Content $StderrLog -Tail 160 | Out-Host }
+Show-RuntimeDiagnostics -Port $Port
 try { if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } } catch {}
 throw "Hermes Dashboard started on $DashboardUrl but Control Center API did not become ready within $TimeoutSeconds seconds."
