@@ -208,9 +208,15 @@ try {
         Copy-Item -LiteralPath $_.FullName -Destination $StagePlatform -Recurse -Force
     }
 
-    Write-Stage "Building Dashboard bundle"
-    & $HermesPython (Join-Path $StagePlugin "dashboard\build_bundle.py") --root (Join-Path $StagePlugin "dashboard")
-    if ($LASTEXITCODE -ne 0) { throw "Dashboard bundle build failed with exit code $LASTEXITCODE." }
+    Write-Stage "Building Dashboard/Web bundle"
+    $buildLog = Join-Path $TxnRoot "dashboard-build.log"
+    & $HermesPython (Join-Path $StagePlugin "dashboard\build_bundle.py") --root (Join-Path $StagePlugin "dashboard") *> $buildLog
+    $buildExit = $LASTEXITCODE
+    if (Test-Path -LiteralPath $buildLog) {
+        Get-Content -LiteralPath $buildLog | ForEach-Object { Write-Host ("     " + $_) }
+    }
+    if ($buildExit -ne 0) { throw "Dashboard/Web bundle build failed with exit code $buildExit. The build output is shown above." }
+    Write-Stage "Dashboard/Web bundle complete"
 
     Write-Stage "Validating staged files"
     foreach ($required in @(
@@ -232,8 +238,16 @@ try {
     }
 
     Write-Stage "Compiling staged Python"
-    & $HermesPython -m compileall -q $StagePlugin
-    if ($LASTEXITCODE -ne 0) { throw "Python compile validation failed in staging." }
+    $compileLog = Join-Path $TxnRoot "python-compile.log"
+    & $HermesPython -m compileall -q $StagePlugin *> $compileLog
+    $compileExit = $LASTEXITCODE
+    if ($compileExit -ne 0) {
+        if (Test-Path -LiteralPath $compileLog) {
+            Get-Content -LiteralPath $compileLog | ForEach-Object { Write-Host ("     " + $_) }
+        }
+        throw "Python compile validation failed with exit code $compileExit."
+    }
+    Write-Stage "Python compile complete"
 
     Write-Stage "Installing staged files"
     if (Test-Path -LiteralPath $Target) { Move-Item -LiteralPath $Target -Destination $BackupPlugin -Force }
