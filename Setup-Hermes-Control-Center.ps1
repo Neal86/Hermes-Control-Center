@@ -15,7 +15,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $LocalInstaller = Join-Path $Root "install.ps1"
 $LocalDoctor = Join-Path $Root "doctor.ps1"
 $DashboardLauncher = Join-Path $Root "Dashboard-Launch-v3.ps1"
-$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA -and (Test-Path (Join-Path $env:LOCALAPPDATA "hermes"))) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
+$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA -and (Test-Path (Join-Path $env:LOCALAPPDATA "hermes"))) { Join-Path $env:LOCALAPPDATA "hermes" } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
 $env:HERMES_HOME = $HermesHome
 
 $OfficialHermesInstaller = "https://hermes-agent.nousresearch.com/install.ps1"
@@ -60,7 +60,24 @@ function Read-ManifestVersion([string]$Path) {
     return $null
 }
 
-function Get-HermesCommand { return Get-Command hermes -ErrorAction SilentlyContinue }
+function Refresh-HermesPath {
+    $candidates = @(
+        (Join-Path $HermesHome "hermes-agent\bin"),
+        (Join-Path $HermesHome "bin")
+    )
+    foreach ($dir in $candidates) {
+        if ($dir -and (Test-Path -LiteralPath $dir) -and (($env:PATH -split ';') -notcontains $dir)) {
+            $env:PATH = "$dir;$env:PATH"
+        }
+    }
+    return Get-Command hermes -ErrorAction SilentlyContinue
+}
+
+function Get-HermesCommand {
+    $cmd = Get-Command hermes -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd }
+    return Refresh-HermesPath
+}
 
 function Get-HermesInstalledVersion {
     $cmd = Get-HermesCommand
@@ -95,6 +112,10 @@ function Run-OfficialHermesInstaller {
         Invoke-WebRequest -UseBasicParsing -Uri $OfficialHermesInstaller -OutFile $temp
         & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $temp -SkipSetup
         if ($LASTEXITCODE -ne 0) { throw "Official Hermes installer exited with code $LASTEXITCODE." }
+        $cmd = Refresh-HermesPath
+        if (-not $cmd) {
+            throw "Hermes installer completed, but the new hermes launcher was not found under '$HermesHome\hermes-agent\bin'."
+        }
     } finally {
         Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
     }
@@ -166,9 +187,7 @@ function Run-PluginInstaller([string]$InstallerPath) {
     if ($LASTEXITCODE -ne 0) { throw "Control Center installer exited with code $LASTEXITCODE." }
 }
 
-function Install-LocalControlCenter {
-    Run-PluginInstaller $LocalInstaller
-}
+function Install-LocalControlCenter { Run-PluginInstaller $LocalInstaller }
 
 function Install-LatestControlCenter([string]$LatestVersion) {
     $bundled = Get-ControlCenterBundledVersion
@@ -273,6 +292,7 @@ switch ($Action) {
     "Install" {
         if (-not $SkipHermesUpdate) { Update-Hermes }
         elseif (-not (Get-HermesCommand)) { throw "Hermes is not installed and Hermes installation was skipped." }
+        if (-not (Get-HermesCommand)) { throw "Hermes installation/update completed but hermes is still unavailable in this session." }
         Update-ControlCenter
         if (-not $NoDashboard -and -not $NoPrompt) {
             $open = (Read-Host "Open Hermes Dashboard now? [Y/n]").Trim().ToLowerInvariant()
