@@ -5,6 +5,10 @@
     root.querySelectorAll("button").forEach(function (btn) {
       if ((btn.textContent || "").trim() === "WeChat") btn.style.display = "none";
     });
+    root.querySelectorAll(".hx-muted").forEach(function (node) {
+      const text = (node.textContent || "").trim();
+      if (text === "Agents · Projects · Tasks · Windows WeChat") node.textContent = "Agents · Projects · Tasks";
+    });
     root.querySelectorAll(".hx-section-head h2").forEach(function (title) {
       if ((title.textContent || "").trim() === "WeChat Desktop") {
         const card = title.closest(".hx-card") || title.parentElement;
