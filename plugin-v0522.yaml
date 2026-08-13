@@ -1,0 +1,30 @@
+name: hermes-extensions
+version: "0.5.22"
+description: Standalone Hermes Control Center with Provider management, Agent resource isolation, Windows WeChat automation, task management, and native Agent/Project administration
+provides_tools:
+  - resource_list
+  - bound_browser
+  - wechat_status
+  - wechat_list_chats
+  - wechat_get_unread_chats
+  - wechat_get_messages
+  - wechat_send_message
+  - task_center_overview
+  - task_center_upcoming
+  - task_center_create
+  - task_center_update
+  - task_center_action
+  - task_center_history
+  - management_overview
+  - agent_list
+  - agent_get
+  - agent_create
+  - agent_update
+  - agent_action
+  - project_list
+  - project_get
+  - project_create
+  - project_update
+  - project_action
+provides_hooks:
+  - pre_tool_call
