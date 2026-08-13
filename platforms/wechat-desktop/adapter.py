@@ -13,6 +13,7 @@ if not CONTROL_CENTER_ROOT.is_dir():
 if str(CONTROL_CENTER_ROOT) not in sys.path:
     sys.path.insert(0, str(CONTROL_CENTER_ROOT))
 
+from resources.bindings import ResourceBindings  # noqa: E402
 from resources.context import current_agent  # noqa: E402
 from resources.wechat_bound import BoundWeChatDesktop  # noqa: E402
 
@@ -42,7 +43,12 @@ legacy = _load_legacy()
 class _BoundFactory:
     @staticmethod
     def available() -> bool:
-        return BoundWeChatDesktop.available()
+        try:
+            agent = current_agent()
+            ResourceBindings().require(agent, "wechat", ready=True)
+            return bool(BoundWeChatDesktop.available())
+        except Exception:
+            return False
 
     def __new__(cls):
         return BoundWeChatDesktop(current_agent())
