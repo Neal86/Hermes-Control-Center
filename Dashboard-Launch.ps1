@@ -51,6 +51,46 @@ function Find-NpmCommand {
     return $null
 }
 
+function Convert-NpmVersion {
+    param([string]$VersionText)
+    if (-not $VersionText) { return $null }
+    if ($VersionText -match '([0-9]+)\.([0-9]+)\.([0-9]+)') {
+        try { return [version]::new([int]$Matches[1], [int]$Matches[2], [int]$Matches[3]) } catch {}
+    }
+    return $null
+}
+
+function Ensure-CompatibleNpm {
+    $npm = Find-NpmCommand
+    if (-not $npm) { throw "Node/npm is not available." }
+
+    $versionText = try { (& $npm --version 2>&1 | Out-String).Trim() } catch { "" }
+    $version = Convert-NpmVersion $versionText
+    if ($null -eq $version) {
+        throw "Could not determine npm version from '$versionText'."
+    }
+
+    # Hermes currently declares npm <11.10.0 OR >=11.17.0. Versions 11.10-11.16
+    # understand min-release-age but not min-release-age-exclude, so Hermes'
+    # engine-strict .npmrc intentionally rejects them.
+    $badFloor = [version]"11.10.0"
+    $goodFloor = [version]"11.17.0"
+    if ($version -ge $badFloor -and $version -lt $goodFloor) {
+        Write-Host "npm $versionText is incompatible with Hermes' security policy. Upgrading npm to 11.17+..." -ForegroundColor Yellow
+        & $npm install -g "npm@^11.17.0" 2>&1 | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "Automatic npm upgrade failed with exit code $LASTEXITCODE." }
+        $npm = Find-NpmCommand
+        if (-not $npm) { throw "npm disappeared after upgrade." }
+        $versionText = try { (& $npm --version 2>&1 | Out-String).Trim() } catch { "" }
+        $version = Convert-NpmVersion $versionText
+        if ($null -eq $version -or $version -lt $goodFloor) {
+            throw "npm upgrade completed but compatible npm >=11.17.0 was not found (current: '$versionText')."
+        }
+        Write-Host "npm upgraded successfully to $versionText." -ForegroundColor Green
+    }
+    return $npm
+}
+
 function Repair-HermesWebDist {
     if (Test-Path -LiteralPath $WebIndex) {
         Write-Host "Hermes web dist already exists." -ForegroundColor Green
@@ -64,10 +104,7 @@ function Repair-HermesWebDist {
         throw "Hermes web workspace is missing under '$HermesRoot\web'."
     }
 
-    $npm = Find-NpmCommand
-    if (-not $npm) {
-        throw "Node/npm is not available. Hermes Dashboard web assets are missing and cannot be rebuilt automatically."
-    }
+    $npm = Ensure-CompatibleNpm
 
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
     Remove-Item -LiteralPath $WebBuildLog -Force -ErrorAction SilentlyContinue
