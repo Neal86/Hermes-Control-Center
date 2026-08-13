@@ -4,7 +4,6 @@ from collections.abc import Iterable
 from typing import Any
 
 from . import schemas, tools
-from .compatibility import detect_capabilities
 from .resources import tools as resource_tools
 from .resources.policy import pre_tool_call as resource_pre_tool_call
 
@@ -55,6 +54,7 @@ def register(ctx):
         ],
         check_fn=resource_tools.bound_wechat_available,
     )
+
     _register_group(
         ctx,
         "hermes_extensions_tasks",
@@ -68,22 +68,23 @@ def register(ctx):
         ],
     )
 
-    management_specs: list[ToolSpec] = [
-        ("management_overview", schemas.MANAGEMENT_OVERVIEW, tools.management_overview),
-        ("agent_list", schemas.AGENT_LIST, tools.agent_list),
-        ("agent_get", schemas.AGENT_GET, tools.agent_get),
-        ("agent_create", schemas.AGENT_CREATE, tools.agent_create),
-        ("agent_update", schemas.AGENT_UPDATE, tools.agent_update),
-        ("agent_action", schemas.AGENT_ACTION, tools.agent_action),
-    ]
-    if detect_capabilities().project:
-        management_specs.extend(
-            [
-                ("project_list", schemas.PROJECT_LIST, tools.project_list),
-                ("project_get", schemas.PROJECT_GET, tools.project_get),
-                ("project_create", schemas.PROJECT_CREATE, tools.project_create),
-                ("project_update", schemas.PROJECT_UPDATE, tools.project_update),
-                ("project_action", schemas.PROJECT_ACTION, tools.project_action),
-            ]
-        )
-    _register_group(ctx, "hermes_extensions_management", management_specs)
+    # Keep the declared manifest surface stable across Hermes versions. Project
+    # handlers themselves fail safely with an explicit unsupported payload when
+    # the installed Hermes build has no native `project` command.
+    _register_group(
+        ctx,
+        "hermes_extensions_management",
+        [
+            ("management_overview", schemas.MANAGEMENT_OVERVIEW, tools.management_overview),
+            ("agent_list", schemas.AGENT_LIST, tools.agent_list),
+            ("agent_get", schemas.AGENT_GET, tools.agent_get),
+            ("agent_create", schemas.AGENT_CREATE, tools.agent_create),
+            ("agent_update", schemas.AGENT_UPDATE, tools.agent_update),
+            ("agent_action", schemas.AGENT_ACTION, tools.agent_action),
+            ("project_list", schemas.PROJECT_LIST, tools.project_list),
+            ("project_get", schemas.PROJECT_GET, tools.project_get),
+            ("project_create", schemas.PROJECT_CREATE, tools.project_create),
+            ("project_update", schemas.PROJECT_UPDATE, tools.project_update),
+            ("project_action", schemas.PROJECT_ACTION, tools.project_action),
+        ],
+    )
