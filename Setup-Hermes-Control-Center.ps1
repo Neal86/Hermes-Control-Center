@@ -14,7 +14,9 @@ $ProgressPreference = "SilentlyContinue"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PluginInstaller = Join-Path $Root "install.ps1"
 $Doctor = Join-Path $Root "doctor.ps1"
-$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { Join-Path $HOME ".hermes" }
+$DashboardLauncher = Join-Path $Root "Dashboard-Launch-v2.ps1"
+$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA -and (Test-Path (Join-Path $env:LOCALAPPDATA "hermes"))) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
+$env:HERMES_HOME = $HermesHome
 $OfficialInstallerUrl = "https://hermes-agent.nousresearch.com/install.ps1"
 $HermesVersionSource = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/pyproject.toml"
 $ControlCenterVersionSource = "https://raw.githubusercontent.com/Neal86/Hermes-Control-Center/main/plugin.yaml"
@@ -179,6 +181,7 @@ function Install-Hermes {
     if (-not $cmd) {
         $possible = @(
             (Join-Path $env:LOCALAPPDATA "hermes\bin"),
+            (Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\venv\Scripts"),
             (Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\.venv\Scripts"),
             (Join-Path $env:APPDATA "uv\tools\hermes-agent\Scripts")
         ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
@@ -241,7 +244,7 @@ function Invoke-LatestControlCenterInstaller {
         return
     }
 
-    Write-Step "Downloading Hermes Control Center v$LatestVersion"
+    Write-Step "Downloading Hermes Control Center" + $(if ($LatestVersion) { " v$LatestVersion" } else { " latest" })
     $tempRoot = Join-Path $env:TEMP ("hermes-control-center-" + [Guid]::NewGuid().ToString("N"))
     $zip = Join-Path $tempRoot "control-center.zip"
     $extract = Join-Path $tempRoot "src"
@@ -293,10 +296,14 @@ function Invoke-Repair {
 function Open-HermesDashboard {
     $cmd = Get-HermesCommand
     if (-not $cmd) { throw "Hermes is not installed." }
-    Write-Step "Starting Hermes Dashboard from existing web build"
-    $arguments = @("dashboard", "--skip-build", "--no-open", "--host", "127.0.0.1", "--port", "9119")
-    Start-Process -FilePath $cmd.Source -ArgumentList $arguments -WindowStyle Hidden | Out-Null
-    Write-Host "Hermes Dashboard launch requested on http://127.0.0.1:9119 (web rebuild skipped)."
+    if (Test-Path -LiteralPath $DashboardLauncher) {
+        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $DashboardLauncher
+        if ($LASTEXITCODE -ne 0) { throw "Dashboard launcher exited with code $LASTEXITCODE" }
+        return
+    }
+    Write-Step "Starting Hermes Dashboard"
+    & $cmd.Source dashboard --no-open --host 127.0.0.1 --port 9119
+    if ($LASTEXITCODE -ne 0) { throw "Hermes Dashboard exited with code $LASTEXITCODE" }
 }
 
 function Confirm-Choice([string]$Prompt, [bool]$DefaultYes = $true) {
