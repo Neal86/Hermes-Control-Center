@@ -326,21 +326,34 @@ function Show-Menu {
     Write-Host ("  3. Install / update Control Center only" + $(if ($ccState -in @("current", "newer")) { "  [already current]" } else { "" }))
     Write-Host "  4. Repair Control Center"
     Write-Host "  5. Open Hermes Dashboard"
-    Write-Host "  0. Exit"
+    Write-Host "  6. Exit"
     return (Read-Host "Choose").Trim()
 }
 
-if ($Action -eq "Auto" -and -not $NoPrompt) {
-    $choice = Show-Menu
-    $Action = switch ($choice) {
-        "1" { "Install" }
-        "2" { "UpdateHermes" }
-        "3" { "UpdatePlugin" }
-        "4" { "Repair" }
-        "5" { "Dashboard" }
-        "0" { return }
-        default { throw "Unknown selection: $choice" }
+function Read-MenuAction {
+    while ($true) {
+        $choice = Show-Menu
+        switch ($choice) {
+            "1" { return "Install" }
+            "2" { return "UpdateHermes" }
+            "3" { return "UpdatePlugin" }
+            "4" { return "Repair" }
+            "5" { return "Dashboard" }
+            "6" { return "Exit" }
+            "0" { return "Exit" }
+            default {
+                Write-Host ""
+                Write-Warning "Invalid selection '$choice'. Please choose 1-6."
+                Write-Host "The Setup window will stay open; no changes were made." -ForegroundColor Yellow
+            }
+        }
     }
+}
+
+if ($Action -eq "Auto" -and -not $NoPrompt) {
+    $selectedAction = Read-MenuAction
+    if ($selectedAction -eq "Exit") { return }
+    $Action = $selectedAction
 } elseif ($Action -eq "Auto") {
     $Action = "Install"
 }
