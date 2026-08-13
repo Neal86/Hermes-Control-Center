@@ -5,6 +5,7 @@ Set-StrictMode -Version Latest
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Inner = Join-Path $Root "Dashboard-Launch-v4.ps1"
+$Probe = Join-Path $Root "Dashboard-Api-Probe.ps1"
 $HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA -and (Test-Path (Join-Path $env:LOCALAPPDATA "hermes"))) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
 $env:HERMES_HOME = $HermesHome
 
@@ -26,7 +27,21 @@ function Invoke-WebRequest {
 }
 
 Write-Host "Hermes home: $HermesHome"
-& $Inner
-$code = $LASTEXITCODE
-if ($null -eq $code) { $code = 0 }
+try {
+    & $Inner
+    $code = $LASTEXITCODE
+    if ($null -eq $code) { $code = 0 }
+} catch {
+    $code = 1
+    Write-Host ("Dashboard launch error: " + $_.Exception.Message) -ForegroundColor Red
+}
+
+if ($code -ne 0 -and (Test-Path -LiteralPath $Probe)) {
+    try {
+        & $Probe -Port 9119
+    } catch {
+        Write-Host ("Exact API probe failed: " + $_.Exception.Message) -ForegroundColor Yellow
+    }
+}
+
 exit [int]$code
