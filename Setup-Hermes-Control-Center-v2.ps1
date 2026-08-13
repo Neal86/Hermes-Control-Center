@@ -13,7 +13,7 @@ $EnableScript = Join-Path $Root "Enable-Control-Center-Plugins.ps1"
 if (-not (Test-Path -LiteralPath $LegacySetup)) { throw "Missing Setup-Hermes-Control-Center.ps1" }
 
 $needsEnable = $Action -in @("Install", "UpdatePlugin", "Repair")
-$args = @("-Action", $Action)
+$args = @("-Action", $Action, "-NoPrompt", "-NoDashboard")
 if ($needsEnable) { $args += "-NoEnable" }
 
 & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $LegacySetup @args
