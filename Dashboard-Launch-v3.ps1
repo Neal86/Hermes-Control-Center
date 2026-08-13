@@ -11,13 +11,24 @@ $env:HERMES_HOME = $HermesHome
 
 if (-not (Test-Path -LiteralPath $Inner)) { throw "Missing Dashboard-Launch-v4.ps1" }
 
+function Get-ServedDashboardToken {
+    param([Parameter(Mandatory=$true)][string]$ApiUri,[int]$TimeoutSec = 3)
+    try {
+        $parsed = [System.Uri]$ApiUri
+        $root = "{0}://{1}:{2}/" -f $parsed.Scheme, $parsed.Host, $parsed.Port
+        $html = Microsoft.PowerShell.Utility\Invoke-WebRequest -Uri $root -UseBasicParsing -TimeoutSec $TimeoutSec -ErrorAction Stop
+        $text = [string]$html.Content
+        $match = [regex]::Match($text, 'window\.__HERMES_SESSION_TOKEN__\s*=\s*(?<json>"(?:\\.|[^"\\])*")')
+        if (-not $match.Success) { return "" }
+        try { return [string]($match.Groups['json'].Value | ConvertFrom-Json) } catch { return "" }
+    } catch { return "" }
+}
+
 # Windows PowerShell 5.1 does not support Invoke-WebRequest -SkipHttpErrorCheck.
-# Keep the v4 launcher logic unchanged while accepting that switch here.
-# Hermes v0.20+ protects plugin APIs with X-Hermes-Session-Token even on
-# loopback. The browser receives that token from the served HTML automatically.
-# For the launcher's readiness probe only, a 401 from the exact Control Center
-# capabilities route proves the route exists and is behind the expected auth
-# middleware, so surface it as an HTTP response instead of throwing.
+# Hermes v0.20+ protects plugin APIs with X-Hermes-Session-Token on loopback.
+# The browser receives the token from the served HTML; the launcher adopts the
+# exact same served token for readiness probing so a healthy protected endpoint
+# returns its real 2xx response instead of looking perpetually unready with 401.
 function Invoke-WebRequest {
     param(
         [Parameter(Mandatory=$true)][string]$Uri,
@@ -35,10 +46,16 @@ function Invoke-WebRequest {
         if ($response) {
             $status = [int]$response.StatusCode
             if ($status -eq 401 -and $Uri -match '/api/plugins/hermes-extensions/capabilities(?:\?|$)') {
-                return [pscustomobject]@{
-                    StatusCode = 401
-                    Content = '{"detail":"Unauthorized"}'
+                $token = Get-ServedDashboardToken -ApiUri $Uri -TimeoutSec $(if ($TimeoutSec -gt 0) { $TimeoutSec } else { 3 })
+                if ($token) {
+                    $retry = @{ Uri = $Uri; ErrorAction = "Stop"; Headers = @{ "X-Hermes-Session-Token" = $token } }
+                    if ($UseBasicParsing) { $retry.UseBasicParsing = $true }
+                    if ($TimeoutSec -gt 0) { $retry.TimeoutSec = $TimeoutSec }
+                    return Microsoft.PowerShell.Utility\Invoke-WebRequest @retry
                 }
+                # A protected 401 still proves the exact plugin route is mounted;
+                # the browser will authenticate via the same server-injected token.
+                return [pscustomobject]@{ StatusCode = 401; Content = '{"detail":"Unauthorized"}' }
             }
         }
         throw
