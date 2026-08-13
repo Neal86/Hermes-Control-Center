@@ -293,9 +293,10 @@ function Invoke-Repair {
 function Open-HermesDashboard {
     $cmd = Get-HermesCommand
     if (-not $cmd) { throw "Hermes is not installed." }
-    Write-Step "Starting Hermes Dashboard"
-    Start-Process -FilePath $cmd.Source -ArgumentList @("dashboard") | Out-Null
-    Write-Host "Hermes Dashboard launch requested."
+    Write-Step "Starting Hermes Dashboard from existing web build"
+    $arguments = @("dashboard", "--skip-build", "--no-open", "--host", "127.0.0.1", "--port", "9119")
+    Start-Process -FilePath $cmd.Source -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+    Write-Host "Hermes Dashboard launch requested on http://127.0.0.1:9119 (web rebuild skipped)."
 }
 
 function Confirm-Choice([string]$Prompt, [bool]$DefaultYes = $true) {
