@@ -18,7 +18,7 @@ $DashboardLauncher = Join-Path $Root "Dashboard-Launch-v3.ps1"
 $HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA -and (Test-Path (Join-Path $env:LOCALAPPDATA "hermes"))) { Join-Path $env:LOCALAPPDATA "hermes" } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
 $env:HERMES_HOME = $HermesHome
 
-$OfficialHermesInstaller = "https://hermes-agent.nousresearch.com/install.ps1"
+$OfficialHermesInstaller = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1"
 $HermesVersionSource = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/pyproject.toml"
 $ControlCenterVersionSource = "https://raw.githubusercontent.com/Neal86/Hermes-Control-Center/main/plugin.yaml"
 $ControlCenterZip = "https://github.com/Neal86/Hermes-Control-Center/archive/refs/heads/main.zip"
@@ -110,12 +110,18 @@ function Run-OfficialHermesInstaller {
     $temp = Join-Path $env:TEMP ("hermes-install-" + [Guid]::NewGuid().ToString("N") + ".ps1")
     try {
         Invoke-WebRequest -UseBasicParsing -Uri $OfficialHermesInstaller -OutFile $temp
-        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $temp -SkipSetup
+        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $temp -SkipSetup -HermesHome $HermesHome
         if ($LASTEXITCODE -ne 0) { throw "Official Hermes installer exited with code $LASTEXITCODE." }
-        $cmd = Refresh-HermesPath
-        if (-not $cmd) {
-            throw "Hermes installer completed, but the new hermes launcher was not found under '$HermesHome\hermes-agent\bin'."
+        $officialLauncher = Join-Path $HermesHome "hermes-agent\bin\hermes.exe"
+        if (-not (Test-Path -LiteralPath $officialLauncher)) {
+            throw "Hermes installer completed, but the official launcher was not found at '$officialLauncher'."
         }
+        $officialVersion = Parse-Version ((& $officialLauncher --version 2>&1 | Out-String).Trim())
+        if (-not $officialVersion) { throw "Official Hermes launcher was installed but its version could not be verified." }
+        $officialBin = Split-Path -Parent $officialLauncher
+        $env:PATH = (($env:PATH -split ';' | Where-Object { $_ -and ($_ -ne $officialBin) }) -join ';')
+        $env:PATH = "$officialBin;$env:PATH"
+        Write-Host "Official Hermes Windows install is active (v$officialVersion)." -ForegroundColor Green
     } finally {
         Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
     }
@@ -170,10 +176,8 @@ function Update-Hermes {
         return
     }
     if ($kind -eq "uv-tool") {
-        $uv = Get-Command uv -ErrorAction SilentlyContinue
-        if (-not $uv) { throw "Hermes is a uv tool but uv is not available." }
-        & $uv.Source tool upgrade hermes-agent
-        if ($LASTEXITCODE -ne 0) { throw "uv tool upgrade hermes-agent failed with code $LASTEXITCODE." }
+        Write-Host "Legacy uv-tool Hermes installation detected. Migrating to the supported official Windows installer..." -ForegroundColor Yellow
+        Run-OfficialHermesInstaller
         return
     }
     throw "Hermes is installed from an external source. Setup will not overwrite it automatically."
