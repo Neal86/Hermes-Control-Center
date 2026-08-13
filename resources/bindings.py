@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from .context import root_hermes_home
 from .registry import ResourceRegistry
 
 
@@ -15,8 +16,7 @@ class ResourceAccessError(RuntimeError):
 
 class ResourceBindings:
     def __init__(self, root: Path | None = None) -> None:
-        hermes_home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
-        self.root = (root or hermes_home / "plugin-data" / "hermes-extensions" / "resources").expanduser()
+        self.root = (root or root_hermes_home() / "plugin-data" / "hermes-extensions" / "resources").expanduser()
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "bindings.json"
         self.registry = ResourceRegistry(self.root)
@@ -49,13 +49,13 @@ class ResourceBindings:
         resource = self.registry.get(resource_id, refresh=True)
         if not resource:
             raise ValueError("unknown desktop resource")
-        agent = str(agent or "").strip()
+        agent = str(agent or "").strip().lower()
         if not agent:
             raise ValueError("agent is required")
         bindings = self._read()
         bindings[resource_id] = agent
         self._write(bindings)
-        return {"resource": resource, "agent": agent}
+        return {"resource": dict(resource, assigned_agent=agent), "agent": agent}
 
     def unbind(self, resource_id: str) -> bool:
         bindings = self._read()
@@ -65,13 +65,10 @@ class ResourceBindings:
         return existed
 
     def resources_for_agent(self, agent: str, *, kind: str | None = None, refresh: bool = True) -> list[dict[str, Any]]:
+        agent = str(agent or "").strip().lower()
         bindings = self._read()
         rows = self.registry.list(refresh=refresh)
-        return [
-            dict(row, assigned_agent=bindings.get(str(row.get("id"))))
-            for row in rows
-            if bindings.get(str(row.get("id"))) == agent and (kind is None or row.get("kind") == kind)
-        ]
+        return [dict(row, assigned_agent=bindings.get(str(row.get("id")))) for row in rows if bindings.get(str(row.get("id"))) == agent and (kind is None or row.get("kind") == kind)]
 
     def require(self, agent: str, kind: str, *, ready: bool = True) -> dict[str, Any]:
         rows = self.resources_for_agent(agent, kind=kind, refresh=True)
@@ -88,6 +85,7 @@ class ResourceBindings:
         return online[0]
 
     def authorize(self, agent: str, resource_id: str, *, kind: str | None = None, ready: bool = True) -> dict[str, Any]:
+        agent = str(agent or "").strip().lower()
         bindings = self._read()
         if bindings.get(resource_id) != agent:
             raise ResourceAccessError(f"Resource '{resource_id}' is not bound to agent '{agent}'")
@@ -100,4 +98,4 @@ class ResourceBindings:
             raise ResourceAccessError("Bound resource is offline")
         if ready and resource.get("status") != "ready":
             raise ResourceAccessError("Bound resource is not ready")
-        return resource
+        return dict(resource, assigned_agent=agent)
