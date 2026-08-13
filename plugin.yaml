@@ -1,5 +1,5 @@
 name: hermes-extensions
-version: "0.5.22"
+version: "0.5.23"
 description: Standalone Hermes Control Center with Provider management, Agent resource isolation, Windows WeChat automation, task management, and native Agent/Project administration
 provides_tools:
   - resource_list
