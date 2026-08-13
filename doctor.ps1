@@ -140,13 +140,13 @@ if ($Installed) {
     $Report.plugins_disabled_entries = ($state.disabled -join ", ")
     $Report.plugin_enabled = [bool]($state.enabled -contains "hermes-extensions")
     $Report.plugin_disabled = [bool]($state.disabled -contains "hermes-extensions")
-    $Report.legacy_wechat_enabled = [bool]($state.enabled -contains "wechat-desktop")
-    $Report.legacy_wechat_directory = Test-Path -LiteralPath (Join-Path $HermesHome "plugins\wechat-desktop")
+    $Report.wechat_runtime_enabled = [bool]($state.enabled -contains "wechat-desktop")
+    $Report.wechat_runtime_directory = Test-Path -LiteralPath (Join-Path $HermesHome "plugins\wechat-desktop")
+    $Report.wechat_runtime_internal = $true
     if (-not $Report.plugin_enabled) { $Errors.Add("hermes-extensions is not enabled.") }
     if ($Report.plugin_disabled) { $Errors.Add("hermes-extensions is still disabled.") }
-    if ($Report.legacy_wechat_enabled -or $Report.legacy_wechat_directory) {
-        $Warnings.Add("Legacy standalone wechat-desktop is still present during this install stage; Setup finalize will remove it.")
-    }
+    if (-not $Report.wechat_runtime_enabled) { $Warnings.Add("Control Center WeChat runtime is not enabled; inbound WeChat gateway messages will be unavailable.") }
+    if (-not $Report.wechat_runtime_directory) { $Warnings.Add("Control Center WeChat runtime directory is missing.") }
 }
 
 $Report.warnings = @($Warnings)
