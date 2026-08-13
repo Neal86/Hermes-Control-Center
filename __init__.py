@@ -7,7 +7,6 @@ from . import schemas, tools
 from .compatibility import detect_capabilities
 from .resources import tools as resource_tools
 from .resources.policy import pre_tool_call as resource_pre_tool_call
-from .wechat import WeChatDesktop
 
 ToolSpec = tuple[str, dict[str, Any], Any]
 
@@ -41,9 +40,9 @@ def register(ctx):
         ],
     )
 
-    # The WeChat tools deliberately use the current Hermes profile/Agent and
-    # resolve only that Agent's bound WeChat instance. They never fall back to
-    # the largest/first visible WeChat window.
+    # WeChat tools are visible only when the active Agent has a ready bound
+    # WeChat resource. The check is binding-aware and never falls back to any
+    # other visible desktop instance.
     _register_group(
         ctx,
         "hermes_extensions_wechat",
@@ -54,7 +53,7 @@ def register(ctx):
             ("wechat_get_messages", schemas.WECHAT_GET_MESSAGES, resource_tools.wechat_get_messages),
             ("wechat_send_message", schemas.WECHAT_SEND_MESSAGE, resource_tools.wechat_send_message),
         ],
-        check_fn=WeChatDesktop.available,
+        check_fn=resource_tools.bound_wechat_available,
     )
     _register_group(
         ctx,
