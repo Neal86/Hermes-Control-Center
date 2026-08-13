@@ -9,13 +9,24 @@ if (Test-Path -LiteralPath $pluginYaml) {
     if ($text -match '(?m)^version:\s*["'']?([^\s"'']+)["'']?\s*$') { $version = $Matches[1].Trim() }
 }
 
+function Write-Utf8NoBom([string]$Path, [string]$Text) {
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Text, $encoding)
+}
+
 function Normalize-Manifest([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return }
-    $manifest = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $raw = [System.IO.File]::ReadAllText($Path)
+    $manifest = $raw | ConvertFrom-Json
     $manifest.api = "plugin_api.py"
     if ($version) { $manifest.version = $version }
-    $manifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $Path -Encoding UTF8
-    $verify = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $json = $manifest | ConvertTo-Json -Depth 20
+    Write-Utf8NoBom -Path $Path -Text $json
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        throw "Dashboard manifest still contains a UTF-8 BOM: $Path"
+    }
+    $verify = [System.IO.File]::ReadAllText($Path) | ConvertFrom-Json
     if ([string]$verify.api -ne "plugin_api.py") { throw "Dashboard manifest API normalization failed: $Path" }
 }
 
