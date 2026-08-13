@@ -1,10 +1,12 @@
-"""Hermes Extensions plugin entry point."""
+"""Hermes Control Center plugin entry point."""
 
 from collections.abc import Iterable
 from typing import Any
 
 from . import schemas, tools
 from .compatibility import detect_capabilities
+from .resources import tools as resource_tools
+from .resources.policy import pre_tool_call as resource_pre_tool_call
 from .wechat import WeChatDesktop
 
 ToolSpec = tuple[str, dict[str, Any], Any]
@@ -25,15 +27,32 @@ def _register_group(ctx, toolset: str, specs: Iterable[ToolSpec], *, check_fn=No
 
 
 def register(ctx):
+    # Browser authorization is enforced at Hermes' pre-tool gate. When an Agent
+    # has no ready bound browser the native browser call is vetoed; when it does,
+    # BROWSER_CDP_URL is pinned to that exact instance immediately before dispatch.
+    ctx.register_hook("pre_tool_call", resource_pre_tool_call)
+
+    _register_group(
+        ctx,
+        "hermes_control_center_resources",
+        [
+            ("resource_list", resource_tools.RESOURCE_LIST, resource_tools.resource_list),
+            ("bound_browser", resource_tools.BOUND_BROWSER, resource_tools.bound_browser),
+        ],
+    )
+
+    # The WeChat tools deliberately use the current Hermes profile/Agent and
+    # resolve only that Agent's bound WeChat instance. They never fall back to
+    # the largest/first visible WeChat window.
     _register_group(
         ctx,
         "hermes_extensions_wechat",
         [
-            ("wechat_status", schemas.WECHAT_STATUS, tools.wechat_status),
-            ("wechat_list_chats", schemas.WECHAT_LIST_CHATS, tools.wechat_list_chats),
-            ("wechat_get_unread_chats", schemas.WECHAT_GET_UNREAD_CHATS, tools.wechat_get_unread_chats),
-            ("wechat_get_messages", schemas.WECHAT_GET_MESSAGES, tools.wechat_get_messages),
-            ("wechat_send_message", schemas.WECHAT_SEND_MESSAGE, tools.wechat_send_message),
+            ("wechat_status", schemas.WECHAT_STATUS, resource_tools.wechat_status),
+            ("wechat_list_chats", schemas.WECHAT_LIST_CHATS, resource_tools.wechat_list_chats),
+            ("wechat_get_unread_chats", schemas.WECHAT_GET_UNREAD_CHATS, resource_tools.wechat_get_unread_chats),
+            ("wechat_get_messages", schemas.WECHAT_GET_MESSAGES, resource_tools.wechat_get_messages),
+            ("wechat_send_message", schemas.WECHAT_SEND_MESSAGE, resource_tools.wechat_send_message),
         ],
         check_fn=WeChatDesktop.available,
     )
