@@ -76,13 +76,11 @@ class ProviderService:
     def _profile_home(self, profile: str) -> Path:
         name = str(profile or "default").strip().lower()
         if not name or name == "default":
-            home = self.hermes_home
-        else:
-            profiles_root = (self.hermes_home / "profiles").resolve()
-            home = (profiles_root / name).resolve()
-            if profiles_root != home.parent and profiles_root not in home.parents:
-                raise ValueError("invalid profile")
-        home.mkdir(parents=True, exist_ok=True)
+            return self.hermes_home
+        profiles_root = (self.hermes_home / "profiles").resolve()
+        home = (profiles_root / name).resolve()
+        if home.parent != profiles_root:
+            raise ValueError("invalid profile")
         return home
 
     def catalog(self) -> list[dict[str, Any]]:
@@ -139,6 +137,7 @@ class ProviderService:
 
     def _update_env(self, profile: str, updates: dict[str, str | None]) -> None:
         home = self._profile_home(profile)
+        home.mkdir(parents=True, exist_ok=True)
         path = home / ".env"
         try:
             current_lines = path.read_text("utf-8").splitlines()
@@ -174,9 +173,10 @@ class ProviderService:
                 pass
 
     def list(self, profile: str = "default") -> list[dict[str, Any]]:
-        home = self._profile_home(profile)
+        normalized_profile = str(profile or "default").strip().lower() or "default"
+        home = self._profile_home(normalized_profile)
         env = self._parse_env(home / ".env")
-        meta = self._read_meta().get(profile, {})
+        meta = self._read_meta().get(normalized_profile, {})
         rows = []
         for item in self.catalog():
             provider = item["id"]
