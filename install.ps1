@@ -5,19 +5,31 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$ProgressPreference = "SilentlyContinue"
 
 $Source = Split-Path -Parent $MyInvocation.MyCommand.Path
-$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif (Test-Path (Join-Path $env:LOCALAPPDATA "hermes")) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
+$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA -and (Test-Path (Join-Path $env:LOCALAPPDATA "hermes"))) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
+$env:HERMES_HOME = $HermesHome
 $PluginsRoot = Join-Path $HermesHome "plugins"
 $Target = Join-Path $PluginsRoot "hermes-extensions"
 $PlatformSource = Join-Path $Source "platforms\wechat-desktop"
-$PlatformTarget = Join-Path $PluginsRoot "platforms\wechat-desktop"
+$PlatformTarget = Join-Path $PluginsRoot "wechat-desktop"
+$LegacyNestedPlatformTarget = Join-Path $PluginsRoot "platforms\wechat-desktop"
 $Requirements = Join-Path $Source "requirements-windows.txt"
 $HermesCommand = Get-Command hermes -ErrorAction SilentlyContinue
 
 function Write-Stage {
     param([string]$Message)
     Write-Host ("  -> " + $Message) -ForegroundColor Cyan
+}
+
+function Read-PluginVersion {
+    param([string]$ManifestPath)
+    try {
+        $text = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8
+        if ($text -match '(?m)^version:\s*["'']?([^\s"'']+)["'']?\s*$') { return $Matches[1].Trim() }
+    } catch {}
+    return "unknown"
 }
 
 function Test-HermesCapability {
@@ -114,15 +126,39 @@ function Copy-RuntimeTree {
     }
 }
 
+function Enable-ControlCenterPlugins {
+    param([string]$PythonExe, [string]$TempRoot)
+    $helper = Join-Path $TempRoot "enable-plugins.py"
+    @'
+from hermes_cli.config import load_config, save_config
+cfg = load_config()
+plugins = cfg.setdefault("plugins", {})
+enabled = plugins.get("enabled")
+if not isinstance(enabled, list):
+    enabled = []
+for name in ("hermes-extensions", "wechat-desktop"):
+    if name not in enabled:
+        enabled.append(name)
+plugins["enabled"] = enabled
+save_config(cfg)
+print("Enabled plugins: " + ", ".join(enabled))
+'@ | Set-Content -LiteralPath $helper -Encoding UTF8
+    & $PythonExe $helper
+    if ($LASTEXITCODE -ne 0) { throw "Could not update Hermes plugins.enabled (exit code $LASTEXITCODE)." }
+}
+
 $RequiredPaths = @(
     "plugin.yaml",
+    "__init__.py",
     "dashboard\manifest.json",
     "dashboard\plugin_api.py",
-    "dashboard\extended_api.py",
+    "dashboard\plugin_api_entry.py",
+    "dashboard\extra_api.py",
     "dashboard\build_bundle.py",
     "dashboard\src\api.js",
     "dashboard\src\components.js",
     "dashboard\src\app.js",
+    "dashboard\src\control_center_v2.js",
     "dashboard\src\index.js",
     "doctor.ps1",
     "compatibility.py",
@@ -143,7 +179,8 @@ $RequiredPaths = @(
     "wechat\runtime.py",
     "requirements-windows.txt",
     "platforms\wechat-desktop\plugin.yaml",
-    "platforms\wechat-desktop\adapter.py"
+    "platforms\wechat-desktop\adapter.py",
+    "platforms\wechat-desktop\adapter_legacy.py"
 )
 foreach ($rel in $RequiredPaths) {
     $path = Join-Path $Source $rel
@@ -187,15 +224,17 @@ if (-not $SkipDependencies) {
     if (-not $installed) { throw "Unable to install Control Center dependencies into Hermes Python." }
 }
 
+$PluginVersion = Read-PluginVersion (Join-Path $Source "plugin.yaml")
 New-Item -ItemType Directory -Force -Path $PluginsRoot | Out-Null
 $TxnRoot = Join-Path $PluginsRoot (".hermes-control-center-txn-" + [Guid]::NewGuid().ToString("N"))
 $StagePlugin = Join-Path $TxnRoot "hermes-extensions"
 $StagePlatform = Join-Path $TxnRoot "wechat-desktop"
 $BackupPlugin = Join-Path $TxnRoot "backup-hermes-extensions"
 $BackupPlatform = Join-Path $TxnRoot "backup-wechat-desktop"
+$BackupLegacyNestedPlatform = Join-Path $TxnRoot "backup-legacy-nested-wechat-desktop"
 
 try {
-    Write-Host "Staging Hermes Control Center..."
+    Write-Host "Staging Hermes Control Center v$PluginVersion..."
     Write-Stage "Preparing clean staging directory"
     New-Item -ItemType Directory -Force -Path $StagePlugin | Out-Null
 
@@ -221,9 +260,12 @@ try {
     Write-Stage "Validating staged files"
     foreach ($required in @(
         "plugin.yaml",
+        "__init__.py",
         "dashboard\manifest.json",
         "dashboard\dist\index.js",
-        "dashboard\extended_api.py",
+        "dashboard\plugin_api.py",
+        "dashboard\plugin_api_entry.py",
+        "dashboard\extra_api.py",
         "providers\service.py",
         "resources\context.py",
         "resources\bindings.py",
@@ -236,10 +278,25 @@ try {
             throw "Staging validation failed: missing $required"
         }
     }
+    foreach ($required in @("plugin.yaml", "adapter.py", "adapter_legacy.py")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $StagePlatform $required))) {
+            throw "WeChat platform staging validation failed: missing $required"
+        }
+    }
+
+    try {
+        $manifest = Get-Content -LiteralPath (Join-Path $StagePlugin "dashboard\manifest.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+        $apiRel = [string]$manifest.api
+        if (-not $apiRel -or -not (Test-Path -LiteralPath (Join-Path $StagePlugin ("dashboard\" + $apiRel)))) {
+            throw "Dashboard manifest API target is missing: $apiRel"
+        }
+    } catch {
+        throw "Dashboard manifest API validation failed: $($_.Exception.Message)"
+    }
 
     Write-Stage "Compiling staged Python"
     $compileLog = Join-Path $TxnRoot "python-compile.log"
-    & $HermesPython -m compileall -q $StagePlugin *> $compileLog
+    & $HermesPython -m compileall -q $StagePlugin $StagePlatform *> $compileLog
     $compileExit = $LASTEXITCODE
     if ($compileExit -ne 0) {
         if (Test-Path -LiteralPath $compileLog) {
@@ -252,34 +309,37 @@ try {
     Write-Stage "Installing staged files"
     if (Test-Path -LiteralPath $Target) { Move-Item -LiteralPath $Target -Destination $BackupPlugin -Force }
     if (Test-Path -LiteralPath $PlatformTarget) { Move-Item -LiteralPath $PlatformTarget -Destination $BackupPlatform -Force }
-    New-Item -ItemType Directory -Force -Path (Split-Path $PlatformTarget -Parent) | Out-Null
+    if (Test-Path -LiteralPath $LegacyNestedPlatformTarget) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $BackupLegacyNestedPlatform -Parent) | Out-Null
+        Move-Item -LiteralPath $LegacyNestedPlatformTarget -Destination $BackupLegacyNestedPlatform -Force
+    }
     Move-Item -LiteralPath $StagePlugin -Destination $Target -Force
     Move-Item -LiteralPath $StagePlatform -Destination $PlatformTarget -Force
 
     if (-not $NoEnable) {
-        foreach ($PluginName in @("hermes-extensions", "wechat-desktop")) {
-            Write-Stage "Enabling $PluginName"
-            & $HermesCommand.Source plugins enable $PluginName
-            if ($LASTEXITCODE -ne 0) { throw "Hermes could not enable plugin '$PluginName'." }
-        }
+        Write-Stage "Enabling plugins through Hermes config"
+        Enable-ControlCenterPlugins -PythonExe $HermesPython -TempRoot $TxnRoot
+    } else {
+        Write-Stage "Plugin enable deferred by -NoEnable"
     }
 
-    Write-Stage "Verifying Hermes plugin discovery"
-    $installedList = & $HermesCommand.Source plugins list --plain --no-bundled 2>&1 | Out-String
-    if ($installedList -notmatch "hermes-extensions") { throw "Hermes did not discover hermes-extensions after installation." }
-    if ($installedList -notmatch "wechat-desktop") { throw "Hermes did not discover wechat-desktop after installation." }
+    if (-not $NoEnable) {
+        Write-Stage "Running installed doctor"
+        & (Join-Path $Target "doctor.ps1") -Installed
+        if ($LASTEXITCODE -ne 0) { throw "Installed doctor verification failed with exit code $LASTEXITCODE." }
+    }
 
-    Write-Stage "Running installed doctor"
-    & (Join-Path $Target "doctor.ps1") -Installed
-    if ($LASTEXITCODE -ne 0) { throw "Installed doctor verification failed with exit code $LASTEXITCODE." }
-
-    Write-Host "Hermes Control Center v0.5.1 install complete." -ForegroundColor Green
+    Write-Host "Hermes Control Center v$PluginVersion install complete." -ForegroundColor Green
 } catch {
     Write-Warning "Installation failed; restoring previous Control Center files."
     if (Test-Path -LiteralPath $Target) { Remove-Item -LiteralPath $Target -Recurse -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $PlatformTarget) { Remove-Item -LiteralPath $PlatformTarget -Recurse -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $BackupPlugin) { Move-Item -LiteralPath $BackupPlugin -Destination $Target -Force }
     if (Test-Path -LiteralPath $BackupPlatform) { Move-Item -LiteralPath $BackupPlatform -Destination $PlatformTarget -Force }
+    if (Test-Path -LiteralPath $BackupLegacyNestedPlatform) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $LegacyNestedPlatformTarget -Parent) | Out-Null
+        Move-Item -LiteralPath $BackupLegacyNestedPlatform -Destination $LegacyNestedPlatformTarget -Force
+    }
     throw
 } finally {
     if (Test-Path -LiteralPath $TxnRoot) { Remove-Item -LiteralPath $TxnRoot -Recurse -Force -ErrorAction SilentlyContinue }
