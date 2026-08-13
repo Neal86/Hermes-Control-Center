@@ -69,7 +69,8 @@ function Find-HermesPython {
     return $null
 }
 
-$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif (Test-Path (Join-Path $env:LOCALAPPDATA "hermes")) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
+$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA -and (Test-Path (Join-Path $env:LOCALAPPDATA "hermes"))) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
+$env:HERMES_HOME = $HermesHome
 $Hermes = Get-Command hermes -ErrorAction SilentlyContinue
 $HermesPython = Find-HermesPython -HermesCommand $Hermes -HermesHome $HermesHome
 $Report = [ordered]@{
@@ -103,12 +104,15 @@ if ($HermesPython) {
 
 if ($Installed) {
     $PluginRoot = Join-Path $HermesHome "plugins\hermes-extensions"
-    $PlatformRoot = Join-Path $HermesHome "plugins\platforms\wechat-desktop"
+    $PlatformRoot = Join-Path $HermesHome "plugins\wechat-desktop"
     $InstalledFiles = [ordered]@{
         plugin_manifest = "plugin.yaml"
+        plugin_entry = "__init__.py"
         dashboard_manifest = "dashboard\manifest.json"
         dashboard_bundle = "dashboard\dist\index.js"
-        dashboard_api = "dashboard\extended_api.py"
+        dashboard_api_entry = "dashboard\plugin_api_entry.py"
+        dashboard_api_core = "dashboard\plugin_api.py"
+        dashboard_api_extra = "dashboard\extra_api.py"
         management_overview = "management\overview.py"
         management_service = "management\service.py"
         task_service_v3 = "task_center\service_v3.py"
@@ -125,19 +129,29 @@ if ($Installed) {
     foreach ($entry in $InstalledFiles.GetEnumerator()) {
         $Report[$entry.Key] = Test-Path -LiteralPath (Join-Path $PluginRoot $entry.Value)
     }
-    $Report["wechat_platform"] = Test-Path -LiteralPath (Join-Path $PlatformRoot "plugin.yaml")
-    if ($Hermes -and $Report.capability_plugins) {
+    $Report["wechat_platform_manifest"] = Test-Path -LiteralPath (Join-Path $PlatformRoot "plugin.yaml")
+    $Report["wechat_platform_adapter"] = Test-Path -LiteralPath (Join-Path $PlatformRoot "adapter.py")
+    $Report["wechat_platform_legacy"] = Test-Path -LiteralPath (Join-Path $PlatformRoot "adapter_legacy.py")
+
+    $Report["plugin_enabled"] = $false
+    $Report["wechat_plugin_enabled"] = $false
+    if ($HermesPython) {
         try {
-            $pluginList = & $Hermes.Source plugins list --plain --no-bundled 2>&1 | Out-String
-            $Report["plugin_detected"] = $pluginList -match "hermes-extensions"
-            $Report["wechat_plugin_detected"] = $pluginList -match "wechat-desktop"
-        } catch {
-            $Report["plugin_detected"] = $false
-            $Report["wechat_plugin_detected"] = $false
-        }
-    } else {
-        $Report["plugin_detected"] = $false
-        $Report["wechat_plugin_detected"] = $false
+            $enabledJson = & $HermesPython -c "from hermes_cli.config import load_config; import json; c=load_config(); print(json.dumps((c.get('plugins') or {}).get('enabled') or []))" 2>$null | Select-Object -Last 1
+            $enabled = @($enabledJson | ConvertFrom-Json)
+            $Report["plugin_enabled"] = $enabled -contains "hermes-extensions"
+            $Report["wechat_plugin_enabled"] = $enabled -contains "wechat-desktop"
+        } catch {}
+    }
+
+    try {
+        $manifest = Get-Content -LiteralPath (Join-Path $PluginRoot "dashboard\manifest.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+        $apiRel = [string]$manifest.api
+        $Report["dashboard_manifest_api_target"] = $apiRel
+        $Report["dashboard_manifest_api_exists"] = [bool]($apiRel -and (Test-Path -LiteralPath (Join-Path $PluginRoot ("dashboard\" + $apiRel))))
+    } catch {
+        $Report["dashboard_manifest_api_target"] = ""
+        $Report["dashboard_manifest_api_exists"] = $false
     }
 }
 
@@ -153,15 +167,18 @@ if (-not $Report.wechat_dependencies) { $Warnings.Add("Windows WeChat Python dep
 
 if ($Installed) {
     foreach ($key in @(
-        "plugin_manifest", "dashboard_manifest", "dashboard_bundle", "dashboard_api",
+        "plugin_manifest", "plugin_entry", "dashboard_manifest", "dashboard_bundle",
+        "dashboard_api_entry", "dashboard_api_core", "dashboard_api_extra",
         "management_overview", "management_service", "task_service_v3", "provider_service",
         "resource_context", "resource_discovery", "resource_registry", "resource_bindings",
-        "resource_policy", "resource_tools", "resource_wechat_bound", "wechat_runtime", "wechat_platform"
+        "resource_policy", "resource_tools", "resource_wechat_bound", "wechat_runtime",
+        "wechat_platform_manifest", "wechat_platform_adapter", "wechat_platform_legacy",
+        "dashboard_manifest_api_exists"
     )) {
-        if (-not $Report[$key]) { $Errors.Add("Installed component missing: $key") }
+        if (-not $Report[$key]) { $Errors.Add("Installed component missing or invalid: $key") }
     }
-    if (-not $Report.plugin_detected) { $Errors.Add("Hermes does not discover hermes-extensions.") }
-    if (-not $Report.wechat_plugin_detected) { $Errors.Add("Hermes does not discover wechat-desktop.") }
+    if (-not $Report.plugin_enabled) { $Errors.Add("hermes-extensions is not present in plugins.enabled.") }
+    if (-not $Report.wechat_plugin_enabled) { $Errors.Add("wechat-desktop is not present in plugins.enabled.") }
 }
 
 $Report["warnings"] = @($Warnings)
@@ -174,7 +191,7 @@ if ($Json) {
     Write-Host "Hermes Control Center doctor ($($Report.mode))"
     Write-Host "----------------------------------------"
     $Report.GetEnumerator() | Where-Object { $_.Key -notin @("warnings", "errors") } | ForEach-Object {
-        Write-Host ("{0,-28} {1}" -f $_.Key, $_.Value)
+        Write-Host ("{0,-32} {1}" -f $_.Key, $_.Value)
     }
     foreach ($message in $Warnings) { Write-Warning $message }
     foreach ($message in $Errors) { Write-Error $message }
