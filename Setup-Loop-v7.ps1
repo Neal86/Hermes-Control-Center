@@ -28,7 +28,11 @@ function Read-VersionFile([string]$Path) {
 }
 function Get-RemoteVersion([string]$Uri, [string]$Pattern) {
     try {
-        $text = (Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 8).Content
+        $separator = if ($Uri.Contains("?")) { "&" } else { "?" }
+        $cacheBust = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        $freshUri = $Uri + $separator + "hcc_cb=" + $cacheBust
+        $headers = @{ "Cache-Control" = "no-cache, no-store, max-age=0"; "Pragma" = "no-cache" }
+        $text = (Invoke-WebRequest -UseBasicParsing -Uri $freshUri -Headers $headers -TimeoutSec 8).Content
         if ($text -match $Pattern) { return $Matches[1].Trim() }
     } catch {}
     return $null
