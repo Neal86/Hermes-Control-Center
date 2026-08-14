@@ -1,6 +1,8 @@
 (function () {
   "use strict";
 
+  const composingFields = new WeakSet();
+
   function createAgentDialog() {
     return document.querySelector('.hx-dialog[aria-label="Create Agent"]');
   }
@@ -38,7 +40,7 @@
 
   function restoreField(key, original, start, end) {
     const field = findCurrentField(key, original);
-    if (!field) return;
+    if (!field || composingFields.has(field)) return;
     const active = document.activeElement;
     if (active === field) return;
     if (active && isCreateAgentTextField(active)) return;
@@ -51,16 +53,46 @@
     } catch (_) {}
   }
 
+  // Chinese/Japanese/Korean IMEs emit intermediate input events while the
+  // composition candidate is still active. The Create Agent modal is currently
+  // remounted after controlled-field state updates, which destroys the native
+  // IME composition session. Keep those intermediate events away from React and
+  // commit the final DOM value once composition ends.
+  document.addEventListener("compositionstart", function (event) {
+    const field = event.target;
+    if (!isCreateAgentTextField(field)) return;
+    composingFields.add(field);
+  }, true);
+
+  document.addEventListener("compositionend", function (event) {
+    const field = event.target;
+    if (!isCreateAgentTextField(field)) return;
+    composingFields.delete(field);
+
+    // Some Chromium/IME combinations emit the final input before compositionend;
+    // others emit it afterwards. Dispatch one normal input in the next task so
+    // React always receives the committed text exactly after composition ends.
+    window.setTimeout(function () {
+      if (!document.contains(field)) return;
+      try {
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      } catch (_) {}
+    }, 0);
+  }, true);
+
   document.addEventListener("input", function (event) {
     const field = event.target;
     if (!isCreateAgentTextField(field)) return;
+
+    if (event.isComposing || composingFields.has(field)) {
+      event.stopImmediatePropagation();
+      return;
+    }
+
     const key = fieldKey(field);
     const start = typeof field.selectionStart === "number" ? field.selectionStart : null;
     const end = typeof field.selectionEnd === "number" ? field.selectionEnd : null;
 
-    // AgentModal is currently declared inside ManagementApp, so every form state
-    // update can remount the dialog tree. Remember the logical field (label), not
-    // only the old DOM node, and refocus its replacement after React commits.
     window.requestAnimationFrame(function () {
       restoreField(key, field, start, end);
       window.setTimeout(function () { restoreField(key, field, start, end); }, 0);
