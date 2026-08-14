@@ -30,11 +30,6 @@
     return suffix ? suffix.slice(-8) : "unknown";
   }
 
-  function isGenericWeChatTitle(value) {
-    const title = String(value || "").trim().toLowerCase();
-    return !title || title === "wechat" || title === "微信" || title === "weixin";
-  }
-
   function ResourcePage() {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -83,11 +78,12 @@
           const detectedTitle = String(r.title || "").trim();
           const wechatFallback = "WeChat #" + (index + 1) + " · " + shortResourceId(r.id);
           const displayName = r.kind === "wechat"
-            ? (customLabel || (!isGenericWeChatTitle(detectedTitle) ? detectedTitle : wechatFallback))
+            ? (customLabel || detectedTitle || wechatFallback)
             : (detectedTitle || r.app);
           return h(Card, { key: r.id },
             h("div", { className: "hx-agent-head" }, h("div", null,
               h("h2", null, displayName),
+              r.kind === "wechat" && customLabel ? h("div", { className: "hx-muted" }, "Window title: " + (detectedTitle || "—")) : null,
               h("div", { className: "hx-muted" }, r.app + " · PID " + r.pid + (r.kind === "wechat" ? " · Instance " + shortResourceId(r.id) : ""))
             ), h(Pill, { kind: kind }, r.status || "unknown")),
             r.kind === "wechat" ? Field("Instance label", h("input", {
