@@ -4,6 +4,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pluginYaml = Join-Path $root "plugin.yaml"
 $version = ""
+$apiTarget = "plugin_api_v3.py"
 if (Test-Path -LiteralPath $pluginYaml) {
     $text = Get-Content -LiteralPath $pluginYaml -Raw -Encoding UTF8
     if ($text -match '(?m)^version:\s*["'']?([^\s"'']+)["'']?\s*$') { $version = $Matches[1].Trim() }
@@ -18,7 +19,7 @@ function Normalize-Manifest([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return }
     $raw = [System.IO.File]::ReadAllText($Path)
     $manifest = $raw | ConvertFrom-Json
-    $manifest.api = "plugin_api.py"
+    $manifest.api = $apiTarget
     if ($version) { $manifest.version = $version }
     $json = $manifest | ConvertTo-Json -Depth 20
     Write-Utf8NoBom -Path $Path -Text $json
@@ -27,7 +28,9 @@ function Normalize-Manifest([string]$Path) {
         throw "Dashboard manifest still contains a UTF-8 BOM: $Path"
     }
     $verify = [System.IO.File]::ReadAllText($Path) | ConvertFrom-Json
-    if ([string]$verify.api -ne "plugin_api.py") { throw "Dashboard manifest API normalization failed: $Path" }
+    if ([string]$verify.api -ne $apiTarget) { throw "Dashboard manifest API normalization failed: $Path" }
+    $apiPath = Join-Path (Split-Path -Parent $Path) $apiTarget
+    if (-not (Test-Path -LiteralPath $apiPath)) { throw "Dashboard API target does not exist: $apiPath" }
 }
 
 $hermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
