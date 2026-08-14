@@ -76,13 +76,15 @@
           const kind = r.status === "ready" ? "ok" : r.status === "offline" ? "failed" : "warning";
           const customLabel = String(labels[r.id] || "").trim();
           const detectedTitle = String(r.title || "").trim();
+          const conversationTitle = String(r.conversation_title || "").trim();
           const wechatFallback = "WeChat #" + (index + 1) + " · " + shortResourceId(r.id);
           const displayName = r.kind === "wechat"
-            ? (customLabel || detectedTitle || wechatFallback)
+            ? (customLabel || conversationTitle || detectedTitle || wechatFallback)
             : (detectedTitle || r.app);
           return h(Card, { key: r.id },
             h("div", { className: "hx-agent-head" }, h("div", null,
               h("h2", null, displayName),
+              r.kind === "wechat" && customLabel && conversationTitle ? h("div", { className: "hx-muted" }, "Current chat: " + conversationTitle) : null,
               r.kind === "wechat" && customLabel ? h("div", { className: "hx-muted" }, "Window title: " + (detectedTitle || "—")) : null,
               h("div", { className: "hx-muted" }, r.app + " · PID " + r.pid + (r.kind === "wechat" ? " · Instance " + shortResourceId(r.id) : ""))
             ), h(Pill, { kind: kind }, r.status || "unknown")),
@@ -94,6 +96,7 @@
               onChange: function (e) { setResourceLabel(r, e.target.value); }
             }), "Saved in this Control Center browser. Use a label to distinguish multiple WeChat accounts.") : null,
             h("div", { className: "hx-kv" },
+              r.kind === "wechat" ? h("span", null, "Current chat") : null, r.kind === "wechat" ? h("strong", null, conversationTitle || "Not detected") : null,
               r.kind === "wechat" ? h("span", null, "Window title") : null, r.kind === "wechat" ? h("strong", null, detectedTitle || "—") : null,
               r.kind === "wechat" ? h("span", null, "Instance") : null, r.kind === "wechat" ? h("strong", null, "PID " + r.pid + " · " + shortResourceId(r.id)) : null,
               h("span", null, "Resource ID"), h("strong", null, r.id),
