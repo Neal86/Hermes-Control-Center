@@ -22,15 +22,7 @@ jobs:
         run: python dashboard/build_bundle.py
       - name: Build ZIP
         run: |
-          VERSION=$(python - <<'PY'
-          from pathlib import Path
-          for line in Path('plugin.yaml').read_text('utf-8').splitlines():
-              if line.startswith('version:'):
-                  print(line.partition(':')[2].strip().strip('"').strip("'"))
-                  break
-          PY
-          )
-          OUT="Hermes-Control-Center-v${VERSION}-latest"
+          OUT="Hermes-Control-Center-main"
           mkdir -p "package/$OUT"
           rsync -a ./ "package/$OUT/" \
             --exclude .git \
@@ -39,9 +31,9 @@ jobs:
             --exclude __pycache__ \
             --exclude .pytest_cache
           cd package
-          zip -qr "${OUT}.zip" "$OUT"
+          zip -qr "Hermes-Control-Center-main.zip" "$OUT"
       - uses: actions/upload-artifact@v4
         with:
-          name: Hermes-Control-Center-latest
-          path: package/Hermes-Control-Center-v*-latest.zip
+          name: Hermes-Control-Center-main
+          path: package/Hermes-Control-Center-main.zip
           if-no-files-found: error
