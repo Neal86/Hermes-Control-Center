@@ -3,7 +3,15 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-ORDER = ["api.js", "components.js", "app.js", "control_center_v2.js", "control_cleanup.js", "index.js"]
+ORDER = [
+    "api.js",
+    "components.js",
+    "app.js",
+    "control_center_v2.js",
+    "control_cleanup.js",
+    "provider_models_v3.js",
+    "index.js",
+]
 
 
 def build(root: Path) -> Path:
