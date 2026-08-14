@@ -13,15 +13,22 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+DASHBOARD_ROOT = Path(__file__).resolve().parent
+PLUGIN_ROOT = DASHBOARD_ROOT.parent
+if str(DASHBOARD_ROOT) not in sys.path:
+    sys.path.insert(0, str(DASHBOARD_ROOT))
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from management.service import ManagementCenter  # noqa: E402
-from providers.service import ProviderService  # noqa: E402
-from resources.bindings import ResourceAccessError, ResourceBindings  # noqa: E402
-from resources.registry import ResourceRegistry  # noqa: E402
-from resources.wechat_bound import BoundWeChatDesktop  # noqa: E402
+from backend_packages_v2 import load_module  # noqa: E402
+
+ManagementCenter = load_module("hcc_management", "management", "service").ManagementCenter
+ProviderService = load_module("hcc_providers", "providers", "service").ProviderService
+_bindings_module = load_module("hcc_resources", "resources", "bindings")
+ResourceAccessError = _bindings_module.ResourceAccessError
+ResourceBindings = _bindings_module.ResourceBindings
+ResourceRegistry = load_module("hcc_resources", "resources", "registry").ResourceRegistry
+BoundWeChatDesktop = load_module("hcc_resources", "resources", "wechat_bound").BoundWeChatDesktop
 
 router = APIRouter()
 
@@ -116,7 +123,7 @@ def _validate_public_https_url(base_url: str) -> str:
 def _discover_models(base_url: str, credential: str | None) -> list[str]:
     root = _validate_public_https_url(base_url)
     endpoint = root if root.lower().endswith("/models") else root + "/models"
-    headers = {"Accept": "application/json", "User-Agent": "Hermes-Control-Center/0.5.13"}
+    headers = {"Accept": "application/json", "User-Agent": "Hermes-Control-Center/0.5.28"}
     if credential and str(credential).strip():
         headers["Authorization"] = "Bearer " + str(credential).strip()
     req = urllib.request.Request(endpoint, headers=headers, method="GET")
