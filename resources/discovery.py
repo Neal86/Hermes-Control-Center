@@ -85,6 +85,82 @@ def _process_rows() -> list[dict[str, Any]]:
         return []
 
 
+def _wechat_conversation_title(hwnd: int) -> str:
+    """Best-effort read of the active chat header using Windows UI Automation.
+
+    WeChat's top-level Win32 window title is usually just "微信"/"WeChat". The
+    useful identifier is the active conversation header inside the client. This
+    routine only reads UI Automation metadata; it does not click or modify UI.
+    """
+    if platform.system() != "Windows" or not hwnd:
+        return ""
+    script = r"""
+param([Int64]$Hwnd)
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$Hwnd)
+if ($null -eq $root) { exit 0 }
+$rr = $root.Current.BoundingRectangle
+$all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+$rows = @()
+foreach ($el in $all) {
+  try {
+    $name = [string]$el.Current.Name
+    if ([string]::IsNullOrWhiteSpace($name)) { continue }
+    $br = $el.Current.BoundingRectangle
+    if ($br.Width -le 0 -or $br.Height -le 0) { continue }
+    $ct = $el.Current.ControlType.ProgrammaticName
+    $rows += [pscustomobject]@{ Name=$name.Trim(); X=$br.X; Y=$br.Y; W=$br.Width; H=$br.Height; Type=$ct }
+  } catch {}
+}
+# The active conversation header is normally in the upper center/right content
+# pane. Restrict candidates to that band so chat messages/sidebar names do not
+# get mistaken for the header.
+$candidates = $rows | Where-Object {
+  $_.Y -ge ($rr.Y + 15) -and $_.Y -le ($rr.Y + 115) -and
+  $_.X -ge ($rr.X + [Math]::Min(260, $rr.Width * 0.24)) -and
+  $_.X -le ($rr.X + $rr.Width - 120) -and
+  $_.W -ge 40 -and $_.H -le 70 -and
+  $_.Name.Length -ge 2 -and $_.Name.Length -le 180 -and
+  $_.Name -notmatch '^(微信|WeChat|搜索|Search|聊天|通讯录|收藏|朋友圈|小程序|视频号)$'
+}
+if (-not $candidates) { exit 0 }
+# Prefer text-like controls near the top and toward the center of the content pane.
+$best = $candidates | Sort-Object `
+  @{Expression={ if ($_.Type -match 'Text|Button') {0} else {1} }}, `
+  @{Expression={ [Math]::Abs($_.Y - ($rr.Y + 55)) }}, `
+  @{Expression={ [Math]::Abs(($_.X + $_.W/2) - ($rr.X + $rr.Width*0.62)) }} | Select-Object -First 1
+if ($best) { [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); Write-Output $best.Name }
+"""
+    try:
+        proc = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+                "-Hwnd",
+                str(int(hwnd)),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=6,
+            check=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        title = (proc.stdout or "").strip().splitlines()
+        value = title[-1].strip() if title else ""
+        if value.lower() in {"wechat", "微信", "weixin"}:
+            return ""
+        return value[:180]
+    except Exception:
+        return ""
+
+
 def discover_resources() -> list[dict[str, Any]]:
     if platform.system() != "Windows":
         return []
@@ -106,6 +182,7 @@ def discover_resources() -> list[dict[str, Any]]:
             resource_id = _stable_id("wechat", exe_path or name, instance=str(pid))
             if resource_id not in seen:
                 seen.add(resource_id)
+                conversation_title = _wechat_conversation_title(int(win["hwnd"]))
                 resources.append({
                     "id": resource_id,
                     "kind": "wechat",
@@ -113,6 +190,7 @@ def discover_resources() -> list[dict[str, Any]]:
                     "pid": pid,
                     "hwnd": win["hwnd"],
                     "title": win["title"],
+                    "conversation_title": conversation_title,
                     "exe": exe_path or name,
                     "profile": "",
                     "user_data_dir": "",
