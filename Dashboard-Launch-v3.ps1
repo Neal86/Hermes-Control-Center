@@ -10,7 +10,7 @@ $HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDA
 $env:HERMES_HOME = $HermesHome
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
-$script:ForceFreshDashboardProbe = $true
+$env:HCC_FORCE_FRESH_DASHBOARD_PROBE = "1"
 
 if (-not (Test-Path -LiteralPath $Inner)) { throw "Missing Dashboard-Launch-v4.ps1" }
 
@@ -27,10 +27,6 @@ function Get-ServedDashboardToken {
     } catch { return "" }
 }
 
-# Windows PowerShell 5.1 does not support Invoke-WebRequest -SkipHttpErrorCheck.
-# The first Control Center readiness probe intentionally reports "not ready" so
-# v4 follows its normal verified old-Dashboard restart path instead of reusing a
-# Python process that may still have pre-update plugin modules cached.
 function Invoke-WebRequest {
     param(
         [Parameter(Mandatory=$true)][string]$Uri,
@@ -39,8 +35,8 @@ function Invoke-WebRequest {
         [int]$TimeoutSec = 0
     )
 
-    if ($script:ForceFreshDashboardProbe -and $Uri -match '/api/plugins/hermes-extensions/capabilities(?:\?|$)') {
-        $script:ForceFreshDashboardProbe = $false
+    if ($env:HCC_FORCE_FRESH_DASHBOARD_PROBE -eq "1" -and $Uri -match '/api/plugins/hermes-extensions/capabilities(?:\?|$)') {
+        $env:HCC_FORCE_FRESH_DASHBOARD_PROBE = "0"
         return [pscustomobject]@{ StatusCode = 404; Content = '{"detail":"fresh restart requested"}' }
     }
 
