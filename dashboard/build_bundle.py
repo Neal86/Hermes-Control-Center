@@ -8,7 +8,6 @@ ORDER = [
     "components.js",
     "app.js",
     "control_center_v2.js",
-    "control_cleanup.js",
     "provider_models_v3.js",
     "index.js",
 ]
