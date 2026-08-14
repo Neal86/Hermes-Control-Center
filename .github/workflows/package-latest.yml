@@ -1,0 +1,47 @@
+name: Package latest ZIP
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build dashboard bundle
+        run: python dashboard/build_bundle.py
+      - name: Build ZIP
+        run: |
+          VERSION=$(python - <<'PY'
+          from pathlib import Path
+          for line in Path('plugin.yaml').read_text('utf-8').splitlines():
+              if line.startswith('version:'):
+                  print(line.partition(':')[2].strip().strip('"').strip("'"))
+                  break
+          PY
+          )
+          OUT="Hermes-Control-Center-v${VERSION}-latest"
+          mkdir -p "package/$OUT"
+          rsync -a ./ "package/$OUT/" \
+            --exclude .git \
+            --exclude .github \
+            --exclude package \
+            --exclude __pycache__ \
+            --exclude .pytest_cache
+          cd package
+          zip -qr "${OUT}.zip" "$OUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Hermes-Control-Center-latest
+          path: package/Hermes-Control-Center-v*-latest.zip
+          if-no-files-found: error
