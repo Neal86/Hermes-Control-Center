@@ -8,6 +8,9 @@ $Inner = Join-Path $Root "Dashboard-Launch-v4.ps1"
 $Probe = Join-Path $Root "Dashboard-Api-Probe.ps1"
 $HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA -and (Test-Path (Join-Path $env:LOCALAPPDATA "hermes"))) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
 $env:HERMES_HOME = $HermesHome
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+$script:ForceFreshDashboardProbe = $true
 
 if (-not (Test-Path -LiteralPath $Inner)) { throw "Missing Dashboard-Launch-v4.ps1" }
 
@@ -25,10 +28,9 @@ function Get-ServedDashboardToken {
 }
 
 # Windows PowerShell 5.1 does not support Invoke-WebRequest -SkipHttpErrorCheck.
-# Hermes v0.20+ protects plugin APIs with X-Hermes-Session-Token on loopback.
-# The browser receives the token from the served HTML; the launcher adopts the
-# exact same served token for readiness probing so a healthy protected endpoint
-# returns its real 2xx response instead of looking perpetually unready with 401.
+# The first Control Center readiness probe intentionally reports "not ready" so
+# v4 follows its normal verified old-Dashboard restart path instead of reusing a
+# Python process that may still have pre-update plugin modules cached.
 function Invoke-WebRequest {
     param(
         [Parameter(Mandatory=$true)][string]$Uri,
@@ -36,6 +38,12 @@ function Invoke-WebRequest {
         [switch]$SkipHttpErrorCheck,
         [int]$TimeoutSec = 0
     )
+
+    if ($script:ForceFreshDashboardProbe -and $Uri -match '/api/plugins/hermes-extensions/capabilities(?:\?|$)') {
+        $script:ForceFreshDashboardProbe = $false
+        return [pscustomobject]@{ StatusCode = 404; Content = '{"detail":"fresh restart requested"}' }
+    }
+
     $args = @{ Uri = $Uri; ErrorAction = "Stop" }
     if ($UseBasicParsing) { $args.UseBasicParsing = $true }
     if ($TimeoutSec -gt 0) { $args.TimeoutSec = $TimeoutSec }
@@ -53,8 +61,6 @@ function Invoke-WebRequest {
                     if ($TimeoutSec -gt 0) { $retry.TimeoutSec = $TimeoutSec }
                     return Microsoft.PowerShell.Utility\Invoke-WebRequest @retry
                 }
-                # A protected 401 still proves the exact plugin route is mounted;
-                # the browser will authenticate via the same server-injected token.
                 return [pscustomobject]@{ StatusCode = 401; Content = '{"detail":"Unauthorized"}' }
             }
         }
