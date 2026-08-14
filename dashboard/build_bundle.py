@@ -9,6 +9,7 @@ ORDER = [
     "app.js",
     "control_center_v2.js",
     "provider_models_v3.js",
+    "focus_guard.js",
     "index.js",
 ]
 
