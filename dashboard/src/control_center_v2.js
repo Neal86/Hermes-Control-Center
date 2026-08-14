@@ -7,12 +7,40 @@
   const { useCallback, useEffect, useMemo, useState } = React;
   const { request, errText, Card, Pill, Field, Empty, LoadingBlock } = HX;
   const LegacyManagementApp = HX.ManagementApp;
+  const RESOURCE_LABEL_STORAGE_KEY = "hermes-control-center-resource-labels-v1";
+
+  function readResourceLabels() {
+    try {
+      const raw = window.localStorage.getItem(RESOURCE_LABEL_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function writeResourceLabels(labels) {
+    try { window.localStorage.setItem(RESOURCE_LABEL_STORAGE_KEY, JSON.stringify(labels || {})); }
+    catch (_) {}
+  }
+
+  function shortResourceId(resourceId) {
+    const value = String(resourceId || "");
+    const suffix = value.indexOf(":") >= 0 ? value.split(":").pop() : value;
+    return suffix ? suffix.slice(-8) : "unknown";
+  }
+
+  function isGenericWeChatTitle(value) {
+    const title = String(value || "").trim().toLowerCase();
+    return !title || title === "wechat" || title === "微信" || title === "weixin";
+  }
 
   function ResourcePage() {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState("");
     const [error, setError] = useState("");
+    const [labels, setLabels] = useState(readResourceLabels);
     const load = useCallback(async function (refresh) {
       setLoading(true); setError("");
       try { setData(await request("/resources?refresh=" + (refresh ? "true" : "false"))); }
@@ -20,6 +48,18 @@
       finally { setLoading(false); }
     }, []);
     useEffect(function () { load(true); }, [load]);
+
+    function setResourceLabel(row, value) {
+      const nextValue = String(value || "").slice(0, 80);
+      setLabels(function (current) {
+        const next = Object.assign({}, current);
+        if (nextValue.trim()) next[row.id] = nextValue;
+        else delete next[row.id];
+        writeResourceLabels(next);
+        return next;
+      });
+    }
+
     async function bind(row, agent) {
       setBusy(row.id); setError("");
       try {
@@ -37,11 +77,29 @@
     function block(title, items) {
       return h("div", { className: "hx-stack" },
         h("div", { className: "hx-section-head" }, h("h2", null, title), h("span", { className: "hx-muted" }, items.length + " detected")),
-        items.length ? h("div", { className: "hx-agent-grid" }, items.map(function (r) {
+        items.length ? h("div", { className: "hx-agent-grid" }, items.map(function (r, index) {
           const kind = r.status === "ready" ? "ok" : r.status === "offline" ? "failed" : "warning";
+          const customLabel = String(labels[r.id] || "").trim();
+          const detectedTitle = String(r.title || "").trim();
+          const wechatFallback = "WeChat #" + (index + 1) + " · " + shortResourceId(r.id);
+          const displayName = r.kind === "wechat"
+            ? (customLabel || (!isGenericWeChatTitle(detectedTitle) ? detectedTitle : wechatFallback))
+            : (detectedTitle || r.app);
           return h(Card, { key: r.id },
-            h("div", { className: "hx-agent-head" }, h("div", null, h("h2", null, r.title || r.app), h("div", { className: "hx-muted" }, r.app + " · PID " + r.pid)), h(Pill, { kind: kind }, r.status || "unknown")),
+            h("div", { className: "hx-agent-head" }, h("div", null,
+              h("h2", null, displayName),
+              h("div", { className: "hx-muted" }, r.app + " · PID " + r.pid + (r.kind === "wechat" ? " · Instance " + shortResourceId(r.id) : ""))
+            ), h(Pill, { kind: kind }, r.status || "unknown")),
+            r.kind === "wechat" ? Field("Instance label", h("input", {
+              value: labels[r.id] || "",
+              placeholder: "e.g. Warehouse CS / 售后微信",
+              maxLength: 80,
+              disabled: busy === r.id,
+              onChange: function (e) { setResourceLabel(r, e.target.value); }
+            }), "Saved in this Control Center browser. Use a label to distinguish multiple WeChat accounts.") : null,
             h("div", { className: "hx-kv" },
+              r.kind === "wechat" ? h("span", null, "Window title") : null, r.kind === "wechat" ? h("strong", null, detectedTitle || "—") : null,
+              r.kind === "wechat" ? h("span", null, "Instance") : null, r.kind === "wechat" ? h("strong", null, "PID " + r.pid + " · " + shortResourceId(r.id)) : null,
               h("span", null, "Resource ID"), h("strong", null, r.id),
               h("span", null, "Window"), h("strong", null, r.hwnd || "—"),
               r.kind === "browser" ? h("span", null, "Profile") : null, r.kind === "browser" ? h("strong", null, r.profile || "Default") : null,
