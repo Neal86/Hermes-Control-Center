@@ -5,7 +5,6 @@ from typing import Any, Callable
 
 from .bindings import ResourceBindings
 from .context import current_agent
-from .wechat_bound import BoundWeChatDesktop
 from .wechat_web import BoundWeChatWeb
 
 
@@ -16,18 +15,19 @@ def _result(fn: Callable[[], Any]) -> str:
         return json.dumps({"ok": False, "error": type(exc).__name__, "message": str(exc)}, ensure_ascii=False)
 
 
-def _wechat_backend(agent: str):
-    """Prefer the dedicated WeChat Web CDP+DOM adapter, then desktop WeChat."""
-    try:
-        ResourceBindings().require(agent, "browser", ready=True)
-        web = BoundWeChatWeb(agent)
-        status = web.status()
-        if status.get("logged_in") or status.get("url"):
-            return web
-    except Exception:
-        pass
-    ResourceBindings().require(agent, "wechat", ready=True)
-    return BoundWeChatDesktop(agent)
+def _wechat_backend(agent: str) -> BoundWeChatWeb:
+    """Resolve WeChat only through the Agent-bound WeChat Web CDP browser.
+
+    Desktop WeChat is deliberately not used as a fallback. This keeps the
+    routing deterministic: WeChat => dedicated Web CDP adapter; all other web
+    work => Hermes native browser/computer-use tools.
+    """
+    ResourceBindings().require(agent, "browser", ready=True)
+    web = BoundWeChatWeb(agent)
+    status = web.status()
+    if not status.get("url"):
+        raise RuntimeError("bound browser has no open WeChat Web tab")
+    return web
 
 
 def bound_wechat_available() -> bool:
@@ -57,8 +57,10 @@ def bound_browser(args: dict, **kwargs) -> str:
             "agent": agent,
             "resource": row,
             "cdp_url": f"http://127.0.0.1:{int(port)}",
+            "purpose": "wechat_web_only",
             "wechat_driver": "cdp_dom",
             "other_websites": "hermes_native_browser",
+            "generic_cdp_browsing_allowed": False,
             "policy": "bound-only",
         }
 
@@ -76,8 +78,7 @@ def wechat_list_chats(args: dict, **kwargs) -> str:
     agent = current_agent()
 
     def load():
-        backend = _wechat_backend(agent)
-        rows = backend.list_chats(int(args.get("limit", 50)))
+        rows = _wechat_backend(agent).list_chats(int(args.get("limit", 50)))
         return [row.to_dict() if hasattr(row, "to_dict") else row for row in rows]
 
     return _result(load)
@@ -88,8 +89,7 @@ def wechat_get_unread_chats(args: dict, **kwargs) -> str:
     agent = current_agent()
 
     def load():
-        backend = _wechat_backend(agent)
-        rows = backend.unread_chats(int(args.get("limit", 50)))
+        rows = _wechat_backend(agent).unread_chats(int(args.get("limit", 50)))
         return [row.to_dict() if hasattr(row, "to_dict") else row for row in rows]
 
     return _result(load)
@@ -121,6 +121,6 @@ RESOURCE_LIST = {
 
 BOUND_BROWSER = {
     "name": "bound_browser",
-    "description": "Return this Agent's one usable browser binding. WeChat Web is handled by the dedicated CDP+DOM adapter; all other websites should be operated with Hermes native browser/computer-use capabilities.",
+    "description": "Return the Agent-bound CDP browser reserved for WeChat Web. Do not use this CDP browser for Lingxing, carriers, email, or other websites; use Hermes native browser/computer-use capabilities for those.",
     "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
 }
