@@ -124,6 +124,17 @@ def managed_profile_dir(agent: str, browser: str = "chrome") -> Path:
     return path.resolve()
 
 
+def default_user_data_dir(browser: str = "chrome") -> Path:
+    if platform.system() != "Windows":
+        raise RuntimeError("browser profile import is currently supported on Windows only")
+    local = Path(os.environ.get("LOCALAPPDATA") or "")
+    if not str(local):
+        raise RuntimeError("LOCALAPPDATA is unavailable")
+    if str(browser or "chrome").strip().lower() == "edge":
+        return (local / "Microsoft" / "Edge" / "User Data").resolve()
+    return (local / "Google" / "Chrome" / "User Data").resolve()
+
+
 def launch_managed_browser(
     agent: str,
     *,
@@ -233,6 +244,183 @@ def launch_managed_browser(
         time.sleep(0.2)
 
     raise RuntimeError(f"managed browser could not expose CDP: {last_error or 'unknown error'}")
+
+
+def _stop_browser_process(pid: int, timeout: float = 10.0) -> None:
+    pid = int(pid or 0)
+    if pid <= 0:
+        raise ValueError("browser pid is required")
+    log_browser_event("existing_browser_stop_requested", pid=pid)
+    subprocess.run(  # noqa: S603,S607 - Windows system utility, numeric PID only
+        ["taskkill.exe", "/PID", str(pid), "/T"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    deadline = time.monotonic() + max(2.0, timeout)
+    while time.monotonic() < deadline:
+        probe = subprocess.run(  # noqa: S603,S607
+            ["tasklist.exe", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if str(pid) not in (probe.stdout or ""):
+            return
+        time.sleep(0.25)
+    subprocess.run(  # noqa: S603,S607
+        ["taskkill.exe", "/F", "/PID", str(pid), "/T"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    time.sleep(0.5)
+
+
+def _copy_profile_snapshot(source_root: Path, profile: str, target_root: Path) -> str:
+    source_root = source_root.expanduser().resolve()
+    profile = str(profile or "Default").strip() or "Default"
+    source_profile = (source_root / profile).resolve()
+    if not source_profile.is_dir():
+        raise RuntimeError(f"browser profile directory was not found: {source_profile}")
+
+    if target_root.exists() and any(target_root.iterdir()):
+        backup = target_root.with_name(target_root.name + ".backup-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
+        if backup.exists():
+            shutil.rmtree(backup, ignore_errors=True)
+        target_root.replace(backup)
+    target_root.mkdir(parents=True, exist_ok=True)
+
+    target_profile = target_root / "Default"
+    shutil.copytree(source_profile, target_profile, dirs_exist_ok=True)
+    for root_name in ("Local State", "First Run"):
+        src = source_root / root_name
+        if src.is_file():
+            shutil.copy2(src, target_root / root_name)
+    return str(target_profile)
+
+
+def _reopen_original_browser(
+    exe: Path,
+    *,
+    user_data_dir: Path,
+    profile: str,
+    browser: str,
+    source_was_default: bool,
+) -> None:
+    args = [str(exe)]
+    if not source_was_default:
+        args.append(f"--user-data-dir={user_data_dir}")
+    args.extend([f"--profile-directory={profile}", "--restore-last-session", "--no-first-run"])
+    creationflags = 0
+    for flag_name in ("CREATE_NEW_PROCESS_GROUP", "DETACHED_PROCESS"):
+        creationflags |= int(getattr(subprocess, flag_name, 0))
+    try:
+        subprocess.Popen(  # noqa: S603
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=creationflags,
+        )
+        log_browser_event("existing_browser_reopened", browser=browser, profile=profile, user_data_dir=str(user_data_dir))
+    except OSError as exc:
+        log_browser_event("existing_browser_reopen_failed", browser=browser, profile=profile, error=str(exc))
+
+
+def import_existing_browser_to_cdp(
+    resource: dict[str, Any],
+    agent: str,
+    *,
+    start_url: str = "https://wx.qq.com/",
+) -> dict[str, Any]:
+    """Clone a normal open Chrome/Edge profile into an Agent-owned CDP profile.
+
+    Chrome does not allow retroactively enabling CDP on an already-running normal
+    profile, and current Chrome versions ignore remote-debugging on the standard
+    default data directory. This operation therefore closes the selected browser
+    process, snapshots its profile into the Agent-managed data directory, reopens
+    the user's original browser, then launches the imported snapshot with CDP.
+    """
+    if platform.system() != "Windows":
+        raise RuntimeError("existing-browser CDP import is supported on Windows only")
+    if str(resource.get("kind") or "") != "browser":
+        raise ValueError("resource is not a browser")
+    if not resource.get("online"):
+        raise RuntimeError("browser resource is offline")
+    if resource.get("attachable"):
+        raise ValueError("browser already exposes a usable CDP endpoint")
+
+    safe_agent = _safe_agent(agent)
+    browser = "edge" if str(resource.get("app") or "").strip().lower() == "edge" else "chrome"
+    exe_text = str(resource.get("exe") or "").strip()
+    exe = Path(exe_text).expanduser().resolve() if exe_text else find_browser_executable(browser)
+    if not exe.is_file():
+        exe = find_browser_executable(browser)
+    profile = str(resource.get("profile") or "Default").strip() or "Default"
+    configured_root = str(resource.get("user_data_dir") or "").strip()
+    default_root = default_user_data_dir(browser)
+    source_root = Path(configured_root).expanduser().resolve() if configured_root else default_root
+    source_was_default = source_root == default_root
+    target_root = managed_profile_dir(safe_agent, browser)
+    pid = int(resource.get("pid") or 0)
+
+    log_browser_event(
+        "existing_browser_import_started",
+        agent=safe_agent,
+        browser=browser,
+        pid=pid,
+        profile=profile,
+        source_user_data_dir=str(source_root),
+        target_user_data_dir=str(target_root),
+    )
+
+    _stop_browser_process(pid)
+    try:
+        imported_profile = _copy_profile_snapshot(source_root, profile, target_root)
+    except Exception:
+        _reopen_original_browser(
+            exe,
+            user_data_dir=source_root,
+            profile=profile,
+            browser=browser,
+            source_was_default=source_was_default,
+        )
+        raise
+
+    _reopen_original_browser(
+        exe,
+        user_data_dir=source_root,
+        profile=profile,
+        browser=browser,
+        source_was_default=source_was_default,
+    )
+    launch = launch_managed_browser(
+        safe_agent,
+        browser=browser,
+        start_url=start_url,
+    )
+    log_browser_event(
+        "existing_browser_import_complete",
+        agent=safe_agent,
+        browser=browser,
+        imported_profile=imported_profile,
+        debug_port=launch.get("debug_port"),
+    )
+    return {
+        "ok": True,
+        "mode": "imported_existing_session",
+        "source_resource_id": resource.get("id"),
+        "source_profile": profile,
+        "source_user_data_dir": str(source_root),
+        "managed_profile": imported_profile,
+        "launch": launch,
+        "diagnostic_log": browser_diagnostic_log_path(),
+    }
 
 
 def browser_diagnostic_log_path() -> str:
