@@ -30,12 +30,21 @@
     return suffix ? suffix.slice(-8) : "unknown";
   }
 
+  function browserAttachHint(row) {
+    if (row.attachable) return row.debug_port ? "CDP endpoint verified on port " + row.debug_port + "." : "Browser is attachable.";
+    if (row.attach_reason === "remote_debugging_not_enabled") return "This is a normal Chrome/Edge window without CDP. Launch an Agent Browser above instead of changing your personal browser.";
+    if (String(row.attach_reason || "").indexOf("cdp_unreachable") === 0) return "A remote-debugging port was detected, but the CDP endpoint did not answer. Check browser-attach.log.";
+    return row.attach_error || row.attach_reason || "Browser cannot be attached.";
+  }
+
   function ResourcePage() {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState("");
     const [error, setError] = useState("");
+    const [notice, setNotice] = useState("");
     const [labels, setLabels] = useState(readResourceLabels);
+    const [launchAgent, setLaunchAgent] = useState("");
     const load = useCallback(async function (refresh) {
       setLoading(true); setError("");
       try { setData(await request("/resources?refresh=" + (refresh ? "true" : "false"))); }
@@ -43,6 +52,10 @@
       finally { setLoading(false); }
     }, []);
     useEffect(function () { load(true); }, [load]);
+    useEffect(function () {
+      const agents = (data && data.agents) || [];
+      if (!launchAgent && agents.length) setLaunchAgent(agents[0]);
+    }, [data, launchAgent]);
 
     function setResourceLabel(row, value) {
       const nextValue = String(value || "").slice(0, 80);
@@ -56,7 +69,7 @@
     }
 
     async function bind(row, agent) {
-      setBusy(row.id); setError("");
+      setBusy(row.id); setError(""); setNotice("");
       try {
         if (!agent) await request("/resources/" + encodeURIComponent(row.id) + "/bind", { method: "DELETE" });
         else await request("/resources/" + encodeURIComponent(row.id) + "/bind", { method: "POST", body: JSON.stringify({ agent: agent }) });
@@ -64,6 +77,22 @@
       } catch (e) { setError(errText(e)); }
       finally { setBusy(""); }
     }
+
+    async function launchManagedBrowser() {
+      if (!launchAgent || busy) return;
+      setBusy("launch-browser"); setError(""); setNotice("");
+      try {
+        const result = await request("/resources/browser/launch", {
+          method: "POST",
+          body: JSON.stringify({ agent: launchAgent, browser: "chrome", start_url: "https://wx.qq.com/" })
+        });
+        const port = result && result.launch && result.launch.debug_port;
+        setNotice("Managed Chrome launched and bound to " + launchAgent + (port ? " · CDP " + port : "") + ". WeChat Web is opening in the dedicated profile.");
+        await load(true);
+      } catch (e) { setError(errText(e)); }
+      finally { setBusy(""); }
+    }
+
     if (loading && !data) return h(LoadingBlock, null, "Scanning desktop resources…");
     const rows = (data && data.items) || [];
     const agents = (data && data.agents) || [];
@@ -103,10 +132,12 @@
               h("span", null, "Window"), h("strong", null, r.hwnd || "—"),
               r.kind === "browser" ? h("span", null, "Profile") : null, r.kind === "browser" ? h("strong", null, r.profile || "Default") : null,
               r.kind === "browser" ? h("span", null, "Attachable") : null, r.kind === "browser" ? h("strong", null, r.attachable ? ("Ready" + (r.debug_port ? " · CDP " + r.debug_port : "")) : "Not attachable") : null,
+              r.kind === "browser" ? h("span", null, "Attach reason") : null, r.kind === "browser" ? h("strong", null, r.attach_reason || "—") : null,
               h("span", null, "Assigned Agent"), h("strong", null, r.assigned_agent || "Unbound")
             ),
+            r.kind === "browser" ? h("div", { className: "hx-muted", style: { marginTop: "10px" } }, browserAttachHint(r)) : null,
             h("div", { className: "hx-actions" },
-              h("select", { value: r.assigned_agent || "", disabled: busy === r.id, onChange: function (e) { bind(r, e.target.value); } },
+              h("select", { value: r.assigned_agent || "", disabled: busy === r.id || (r.kind === "browser" && !r.attachable), onChange: function (e) { bind(r, e.target.value); } },
                 h("option", { value: "" }, "Unbound"), agents.map(function (a) { return h("option", { key: a, value: a }, a); })
               )
             )
@@ -117,9 +148,19 @@
     return h("div", { className: "hx-page hx-stack" },
       h("div", { className: "hx-section-head" },
         h("div", null, h("h1", null, "Resources"), h("div", { className: "hx-muted" }, "Fail-closed policy: an Agent can use only resources explicitly bound to it. No fallback to another account or browser.")),
-        h("button", { className: "hx-button secondary", type: "button", disabled: loading, onClick: function () { load(true); } }, loading ? "Scanning…" : "Refresh")
+        h("div", { className: "hx-actions" },
+          h("select", { value: launchAgent, disabled: busy === "launch-browser" || !agents.length, onChange: function (e) { setLaunchAgent(e.target.value); } },
+            agents.length ? agents.map(function (a) { return h("option", { key: a, value: a }, a); }) : h("option", { value: "" }, "No Agents")
+          ),
+          h("button", { className: "hx-button", type: "button", disabled: busy === "launch-browser" || !launchAgent, onClick: launchManagedBrowser }, busy === "launch-browser" ? "Launching…" : "Launch Agent Browser"),
+          h("button", { className: "hx-button secondary", type: "button", disabled: loading || Boolean(busy), onClick: function () { load(true); } }, loading ? "Scanning…" : "Refresh")
+        )
       ),
+      h(Card, null,
+        h("strong", null, "Agent Browser uses a dedicated Chrome profile + verified CDP endpoint."),
+        h("div", { className: "hx-muted", style: { marginTop: "6px" } }, "It opens WeChat Web first and is automatically bound to the selected Agent. Your normal Chrome stays separate and is intentionally shown as Not attachable.")),
       error ? h(Card, { className: "hx-warning-card" }, error) : null,
+      notice ? h(Card, null, notice) : null,
       block("WeChat instances", wechat),
       block("Browser instances", browsers)
     );
