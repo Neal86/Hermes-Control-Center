@@ -10,6 +10,7 @@ ORDER = [
     "control_center_v2.js",
     "provider_models_v3.js",
     "focus_guard.js",
+    "cdp_import_v4.js",
     "index.js",
 ]
 
