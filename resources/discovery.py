@@ -9,6 +9,8 @@ from ctypes import WINFUNCTYPE, WinError, byref, create_unicode_buffer, windll
 from ctypes.wintypes import BOOL, DWORD, HWND, LPARAM
 from typing import Any
 
+from .browser_manager import probe_cdp
+
 _BROWSER_EXES = {"chrome.exe": "chrome", "msedge.exe": "edge"}
 _WECHAT_EXES = {"wechat.exe", "weixin.exe", "wechatappex.exe"}
 _PROFILE_RE = re.compile(r"--profile-directory(?:=|\s+)(?:\"([^\"]+)\"|'([^']+)'|([^\s]+))", re.I)
@@ -195,6 +197,8 @@ def discover_resources() -> list[dict[str, Any]]:
                     "profile": "",
                     "user_data_dir": "",
                     "attachable": True,
+                    "attach_reason": "uia_ready",
+                    "attach_error": "",
                     "status": "ready",
                     "online": True,
                 })
@@ -205,10 +209,22 @@ def discover_resources() -> list[dict[str, Any]]:
             continue
         user_data = _match(_USER_DATA_RE, command)
         profile_name = _match(_PROFILE_RE, command) or "Default"
-        port = _match(_REMOTE_PORT_RE, command)
-        # Control Center currently attaches through BROWSER_CDP_URL, which needs
-        # a TCP debugging port. remote-debugging-pipe alone is not usable here.
-        attachable = bool(port)
+        port_text = _match(_REMOTE_PORT_RE, command)
+        port = int(port_text) if port_text else None
+
+        # A command-line switch alone is not enough. Modern Chrome can ignore
+        # remote-debugging switches for the normal default data directory. We
+        # therefore probe /json/version and only call a browser attachable when
+        # the loopback DevTools endpoint actually answers with a websocket URL.
+        if port is None:
+            attachable = False
+            attach_reason = "remote_debugging_not_enabled"
+            attach_error = "Browser was launched without a TCP remote-debugging port"
+        else:
+            attachable, probe_reason = probe_cdp(port)
+            attach_reason = probe_reason
+            attach_error = "" if attachable else "Remote-debugging port is present but the CDP endpoint is unreachable"
+
         resource_id = _stable_id(
             "browser",
             exe_path or name,
@@ -229,8 +245,10 @@ def discover_resources() -> list[dict[str, Any]]:
             "exe": exe_path or name,
             "profile": profile_name,
             "user_data_dir": user_data,
-            "debug_port": int(port) if port else None,
+            "debug_port": port,
             "attachable": attachable,
+            "attach_reason": attach_reason,
+            "attach_error": attach_error,
             "status": "ready" if attachable else "not_attachable",
             "online": True,
         })
