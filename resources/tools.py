@@ -17,7 +17,7 @@ def _result(fn: Callable[[], Any]) -> str:
 
 
 def _wechat_backend(agent: str):
-    """Prefer WeChat Web in the Agent's bound CDP browser, then desktop WeChat."""
+    """Prefer the dedicated WeChat Web CDP+DOM adapter, then desktop WeChat."""
     try:
         ResourceBindings().require(agent, "browser", ready=True)
         web = BoundWeChatWeb(agent)
@@ -57,7 +57,8 @@ def bound_browser(args: dict, **kwargs) -> str:
             "agent": agent,
             "resource": row,
             "cdp_url": f"http://127.0.0.1:{int(port)}",
-            "automation": "playwright_over_cdp",
+            "wechat_driver": "cdp_dom",
+            "other_websites": "hermes_native_browser",
             "policy": "bound-only",
         }
 
@@ -120,6 +121,6 @@ RESOURCE_LIST = {
 
 BOUND_BROWSER = {
     "name": "bound_browser",
-    "description": "Return this Agent's one usable bound browser/CDP endpoint. Browser automation uses Playwright over CDP and fails closed when no ready browser is bound.",
+    "description": "Return this Agent's one usable browser binding. WeChat Web is handled by the dedicated CDP+DOM adapter; all other websites should be operated with Hermes native browser/computer-use capabilities.",
     "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
 }
