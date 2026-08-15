@@ -5,7 +5,7 @@ from typing import Any, Callable
 
 from .bindings import ResourceBindings
 from .context import current_agent
-from .wechat_web import BoundWeChatWeb
+from .wechat_web import WeChatWebAdapter
 
 
 def _result(fn: Callable[[], Any]) -> str:
@@ -15,19 +15,19 @@ def _result(fn: Callable[[], Any]) -> str:
         return json.dumps({"ok": False, "error": type(exc).__name__, "message": str(exc)}, ensure_ascii=False)
 
 
-def _wechat_backend(agent: str) -> BoundWeChatWeb:
-    """Resolve WeChat only through the Agent-bound WeChat Web CDP browser.
+def _wechat_backend(agent: str) -> WeChatWebAdapter:
+    """Resolve WeChat only through WeChat Web Adapter -> CDP -> DOM.
 
-    Desktop WeChat is deliberately not used as a fallback. This keeps the
-    routing deterministic: WeChat => dedicated Web CDP adapter; all other web
-    work => Hermes native browser/computer-use tools.
+    Desktop WeChat is deliberately not used as a fallback. This keeps routing
+    deterministic: WeChat => dedicated Web Adapter over CDP; all other web work
+    => Hermes native browser/computer-use tools.
     """
     ResourceBindings().require(agent, "browser", ready=True)
-    web = BoundWeChatWeb(agent)
-    status = web.status()
+    adapter = WeChatWebAdapter(agent)
+    status = adapter.status()
     if not status.get("url"):
         raise RuntimeError("bound browser has no open WeChat Web tab")
-    return web
+    return adapter
 
 
 def bound_wechat_available() -> bool:
@@ -58,6 +58,7 @@ def bound_browser(args: dict, **kwargs) -> str:
             "resource": row,
             "cdp_url": f"http://127.0.0.1:{int(port)}",
             "purpose": "wechat_web_only",
+            "wechat_adapter": "wechat_web_adapter",
             "wechat_driver": "cdp_dom",
             "other_websites": "hermes_native_browser",
             "generic_cdp_browsing_allowed": False,
@@ -121,6 +122,6 @@ RESOURCE_LIST = {
 
 BOUND_BROWSER = {
     "name": "bound_browser",
-    "description": "Return the Agent-bound CDP browser reserved for WeChat Web. Do not use this CDP browser for Lingxing, carriers, email, or other websites; use Hermes native browser/computer-use capabilities for those.",
+    "description": "Return the Agent-bound browser reserved for the WeChat Web Adapter. The adapter uses CDP internally; do not use this CDP browser for Lingxing, carriers, email, or other websites. Use Hermes native browser/computer-use capabilities for those.",
     "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
 }
