@@ -23,6 +23,7 @@ ResourceBindings = _bindings_module.ResourceBindings
 ResourceRegistry = load_module("hcc_resources", "resources", "registry").ResourceRegistry
 _browser_module = load_module("hcc_resources", "resources", "browser_manager")
 launch_managed_browser = _browser_module.launch_managed_browser
+import_existing_browser_to_cdp = _browser_module.import_existing_browser_to_cdp
 browser_diagnostic_log_path = _browser_module.browser_diagnostic_log_path
 
 router = APIRouter()
@@ -38,12 +39,48 @@ class ManagedBrowserBody(StrictBody):
     start_url: str = Field(default="https://wx.qq.com/", min_length=1, max_length=4096)
 
 
+class ImportBrowserBody(StrictBody):
+    agent: str = Field(min_length=1, max_length=64)
+    start_url: str = Field(default="https://wx.qq.com/", min_length=1, max_length=4096)
+
+
 def _known_agents() -> set[str]:
     return {
         str(row.get("name") or "").strip().lower()
         for row in ManagementCenter().agent_list(probe_runtime=False)
         if str(row.get("name") or "").strip()
     }
+
+
+def _bind_launched_browser(agent: str, launch: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    port = int(launch["debug_port"])
+    user_data_dir = str(launch.get("user_data_dir") or "").lower()
+    resource = None
+    registry = ResourceRegistry()
+    for _ in range(16):
+        rows = registry.list(refresh=True)
+        resource = next(
+            (
+                row
+                for row in rows
+                if row.get("kind") == "browser"
+                and int(row.get("debug_port") or 0) == port
+                and (
+                    not user_data_dir
+                    or str(row.get("user_data_dir") or "").lower() == user_data_dir
+                )
+            ),
+            None,
+        )
+        if resource is not None:
+            break
+        time.sleep(0.25)
+    if resource is None:
+        raise RuntimeError(
+            "managed browser CDP is ready but resource discovery did not find the browser process"
+        )
+    binding = ResourceBindings().bind(str(resource["id"]), agent)
+    return resource, binding
 
 
 @router.post("/resources/browser/launch")
@@ -57,37 +94,41 @@ def launch_agent_browser(body: ManagedBrowserBody) -> dict[str, Any]:
             browser=body.browser,
             start_url=body.start_url,
         )
-        port = int(launch["debug_port"])
-        user_data_dir = str(launch.get("user_data_dir") or "").lower()
-        resource = None
-        registry = ResourceRegistry()
-        for _ in range(12):
-            rows = registry.list(refresh=True)
-            resource = next(
-                (
-                    row
-                    for row in rows
-                    if row.get("kind") == "browser"
-                    and int(row.get("debug_port") or 0) == port
-                    and (
-                        not user_data_dir
-                        or str(row.get("user_data_dir") or "").lower() == user_data_dir
-                    )
-                ),
-                None,
-            )
-            if resource is not None:
-                break
-            time.sleep(0.25)
-        if resource is None:
-            raise RuntimeError(
-                "managed browser CDP is ready but resource discovery did not find the browser process"
-            )
-        binding = ResourceBindings().bind(str(resource["id"]), agent)
+        resource, binding = _bind_launched_browser(agent, launch)
         return {
             "ok": True,
             "launch": launch,
             "resource": dict(resource, assigned_agent=agent),
+            "binding": binding,
+            "diagnostic_log": browser_diagnostic_log_path(),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/resources/browser/{resource_id}/import-cdp")
+def import_existing_browser(resource_id: str, body: ImportBrowserBody) -> dict[str, Any]:
+    agent = body.agent.strip().lower()
+    if agent not in _known_agents():
+        raise HTTPException(status_code=400, detail="unknown agent")
+    try:
+        resource = ResourceRegistry().get(resource_id, refresh=True)
+        if resource is None:
+            raise ValueError("unknown browser resource")
+        result = import_existing_browser_to_cdp(
+            resource,
+            agent,
+            start_url=body.start_url,
+        )
+        launch = dict(result.get("launch") or {})
+        managed_resource, binding = _bind_launched_browser(agent, launch)
+        return {
+            "ok": True,
+            "import": result,
+            "launch": launch,
+            "resource": dict(managed_resource, assigned_agent=agent),
             "binding": binding,
             "diagnostic_log": browser_diagnostic_log_path(),
         }
@@ -118,5 +159,9 @@ def browser_diagnostics() -> dict[str, Any]:
     return {
         "items": browsers,
         "diagnostic_log": browser_diagnostic_log_path(),
-        "hint": "Normal Chrome/Edge windows are not CDP-attachable unless launched with a dedicated remote-debugging profile. Use the managed browser launcher.",
+        "hint": (
+            "Normal already-running Chrome/Edge cannot gain CDP in-place. "
+            "Use import-cdp to snapshot its logged-in profile into an Agent-owned "
+            "CDP profile, or launch a fresh managed browser."
+        ),
     }
