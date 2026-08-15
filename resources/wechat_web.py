@@ -4,7 +4,7 @@ import hashlib
 import json
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlparse
 
 from .bindings import ResourceBindings
@@ -32,13 +32,16 @@ def _stable_id(*parts: str) -> str:
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:24]
 
 
-class BoundWeChatWeb:
-    """Direct CDP + DOM adapter for WeChat Web in an Agent-bound Chrome.
+class WeChatWebAdapter:
+    """Stable WeChat Web Adapter implemented on top of direct Chrome CDP.
 
-    No Playwright/browser automation framework is used here. The adapter talks to
-    Chrome DevTools Protocol directly and encapsulates all WeChat-specific DOM
-    logic behind stable list/read/send methods. Hermes only sees message data and
-    reply functions; non-WeChat websites remain for Hermes native browser tools.
+    Architecture is intentionally two-layered:
+      Hermes tools -> WeChatWebAdapter -> CDP/DOM -> WeChat Web.
+
+    Hermes never receives raw selectors or generic CDP primitives. All WeChat
+    page-specific DOM details live inside this adapter so a future WeChat Web UI
+    change only requires adapter maintenance. Non-WeChat websites remain routed
+    to Hermes native browser/computer-use capabilities.
     """
 
     def __init__(self, agent: str) -> None:
@@ -65,7 +68,7 @@ class BoundWeChatWeb:
         port = int(self._resource()["debug_port"])
         request = urllib.request.Request(
             f"http://127.0.0.1:{port}/json",
-            headers={"Accept": "application/json", "User-Agent": "Hermes-Control-Center/WeChatWebCDP"},
+            headers={"Accept": "application/json", "User-Agent": "Hermes-Control-Center/WeChatWebAdapter"},
         )
         with urllib.request.urlopen(request, timeout=2) as response:  # noqa: S310 - loopback only
             rows = json.loads(response.read(4 * 1024 * 1024).decode("utf-8", "replace"))
@@ -142,6 +145,7 @@ class BoundWeChatWeb:
         title = self._eval("document.title") or str(target.get("title") or "")
         return {
             "source": "wechat_web",
+            "adapter": "wechat_web_adapter",
             "driver": "cdp_dom",
             "agent": self.agent,
             "url": str(target.get("url") or ""),
@@ -235,7 +239,7 @@ class BoundWeChatWeb:
             raise ValueError("text is required")
         meta = self._open_chat(chat)
         if dry_run:
-            return {"ok": True, "dry_run": True, **meta, "text": text, "source": "wechat_web", "driver": "cdp_dom"}
+            return {"ok": True, "dry_run": True, **meta, "text": text, "source": "wechat_web", "adapter": "wechat_web_adapter", "driver": "cdp_dom"}
         payload = json.dumps(text, ensure_ascii=False)
         ok = self._eval(f"""(() => {{
   const editor=document.querySelector('#editArea')||document.querySelector('[contenteditable=\"true\"][ng-model*=\"editArea\"]')||document.querySelector('.edit_area [contenteditable=\"true\"]')||document.querySelector('[contenteditable=\"true\"]');
@@ -249,4 +253,8 @@ class BoundWeChatWeb:
 }})()""")
         if not ok:
             raise RuntimeError("WeChat Web message editor was not found")
-        return {"ok": True, "dry_run": False, **meta, "text": text, "source": "wechat_web", "driver": "cdp_dom"}
+        return {"ok": True, "dry_run": False, **meta, "text": text, "source": "wechat_web", "adapter": "wechat_web_adapter", "driver": "cdp_dom"}
+
+
+# Backward-compatible alias for previously installed builds.
+BoundWeChatWeb = WeChatWebAdapter
