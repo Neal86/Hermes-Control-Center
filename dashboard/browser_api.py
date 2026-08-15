@@ -1,0 +1,122 @@
+from __future__ import annotations
+
+import sys
+import time
+from pathlib import Path
+from typing import Any, Literal
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
+
+DASHBOARD_ROOT = Path(__file__).resolve().parent
+PLUGIN_ROOT = DASHBOARD_ROOT.parent
+if str(DASHBOARD_ROOT) not in sys.path:
+    sys.path.insert(0, str(DASHBOARD_ROOT))
+if str(PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT))
+
+from backend_packages_v2 import load_module  # noqa: E402
+
+ManagementCenter = load_module("hcc_management", "management", "service").ManagementCenter
+_bindings_module = load_module("hcc_resources", "resources", "bindings")
+ResourceBindings = _bindings_module.ResourceBindings
+ResourceRegistry = load_module("hcc_resources", "resources", "registry").ResourceRegistry
+_browser_module = load_module("hcc_resources", "resources", "browser_manager")
+launch_managed_browser = _browser_module.launch_managed_browser
+browser_diagnostic_log_path = _browser_module.browser_diagnostic_log_path
+
+router = APIRouter()
+
+
+class StrictBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ManagedBrowserBody(StrictBody):
+    agent: str = Field(min_length=1, max_length=64)
+    browser: Literal["chrome", "edge"] = "chrome"
+    start_url: str = Field(default="https://wx.qq.com/", min_length=1, max_length=4096)
+
+
+def _known_agents() -> set[str]:
+    return {
+        str(row.get("name") or "").strip().lower()
+        for row in ManagementCenter().agent_list(probe_runtime=False)
+        if str(row.get("name") or "").strip()
+    }
+
+
+@router.post("/resources/browser/launch")
+def launch_agent_browser(body: ManagedBrowserBody) -> dict[str, Any]:
+    agent = body.agent.strip().lower()
+    if agent not in _known_agents():
+        raise HTTPException(status_code=400, detail="unknown agent")
+    try:
+        launch = launch_managed_browser(
+            agent,
+            browser=body.browser,
+            start_url=body.start_url,
+        )
+        port = int(launch["debug_port"])
+        user_data_dir = str(launch.get("user_data_dir") or "").lower()
+        resource = None
+        registry = ResourceRegistry()
+        for _ in range(12):
+            rows = registry.list(refresh=True)
+            resource = next(
+                (
+                    row
+                    for row in rows
+                    if row.get("kind") == "browser"
+                    and int(row.get("debug_port") or 0) == port
+                    and (
+                        not user_data_dir
+                        or str(row.get("user_data_dir") or "").lower() == user_data_dir
+                    )
+                ),
+                None,
+            )
+            if resource is not None:
+                break
+            time.sleep(0.25)
+        if resource is None:
+            raise RuntimeError(
+                "managed browser CDP is ready but resource discovery did not find the browser process"
+            )
+        binding = ResourceBindings().bind(str(resource["id"]), agent)
+        return {
+            "ok": True,
+            "launch": launch,
+            "resource": dict(resource, assigned_agent=agent),
+            "binding": binding,
+            "diagnostic_log": browser_diagnostic_log_path(),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/resources/browser/diagnostics")
+def browser_diagnostics() -> dict[str, Any]:
+    rows = ResourceRegistry().list(refresh=True)
+    browsers = [
+        {
+            "id": row.get("id"),
+            "app": row.get("app"),
+            "pid": row.get("pid"),
+            "title": row.get("title"),
+            "profile": row.get("profile"),
+            "debug_port": row.get("debug_port"),
+            "attachable": bool(row.get("attachable")),
+            "attach_reason": row.get("attach_reason"),
+            "attach_error": row.get("attach_error"),
+        }
+        for row in rows
+        if row.get("kind") == "browser" and row.get("online")
+    ]
+    return {
+        "items": browsers,
+        "diagnostic_log": browser_diagnostic_log_path(),
+        "hint": "Normal Chrome/Edge windows are not CDP-attachable unless launched with a dedicated remote-debugging profile. Use the managed browser launcher.",
+    }
