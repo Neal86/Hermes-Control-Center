@@ -185,6 +185,7 @@ def project_unavailable_payload() -> dict[str, Any]:
             "This Hermes installation does not expose the native 'hermes project' command. "
             "Agents, Tasks and Dashboard remain available. Native Project support will "
             "appear after Hermes is upgraded and capabilities are refreshed; model-facing "
-            "Project tools require the Hermes/plugin process to be restarted after that upgrade."
+            "Project tools require the Hermes/plugin process to be restarted or reloaded "
+            "after that upgrade."
         ),
     }
