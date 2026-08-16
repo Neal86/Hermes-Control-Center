@@ -1,5 +1,5 @@
 name: hermes-extensions
-version: "0.8.2"
+version: "0.8.3"
 description: Standalone Hermes Control Center with WeChat Web Adapter over direct CDP+DOM, Hermes-native browser routing for all other websites, Provider management, Agent resource isolation, task management, and native Agent/Project administration
 provides_tools:
   - resource_list
