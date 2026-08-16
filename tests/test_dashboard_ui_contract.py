@@ -5,27 +5,46 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "dashboard" / "src"
-JS = "\n".join((SRC / name).read_text("utf-8") for name in ("api.js", "components.js", "app.js", "index.js"))
+CORE_JS = "\n".join(
+    (SRC / name).read_text("utf-8")
+    for name in ("api.js", "components.js", "app.js", "control_center_v2.js", "provider_models_v3.js", "focus_guard.js", "index.js")
+)
+RESOURCE_JS = (SRC / "resource_selector_v5.js").read_text("utf-8")
 CSS = (ROOT / "dashboard" / "dist" / "style.css").read_text("utf-8")
-API = (ROOT / "dashboard" / "plugin_api.py").read_text("utf-8")
+API = "\n".join(
+    (ROOT / "dashboard" / name).read_text("utf-8")
+    for name in ("plugin_api.py", "plugin_api_v3.py", "plugin_api_v2.py", "extra_api.py")
+)
 BUILD = (ROOT / "dashboard" / "build_bundle.py").read_text("utf-8")
 
 
-def test_dashboard_source_is_modular_but_release_is_single_bundle() -> None:
-    for name in ("api.js", "components.js", "app.js", "index.js"):
+def test_dashboard_source_has_one_canonical_registration_entry() -> None:
+    required = (
+        "api.js", "components.js", "app.js", "control_center_v2.js",
+        "provider_models_v3.js", "focus_guard.js", "cdp_import_v4.js",
+        "resource_selector_v5.js", "canonical_ui.js", "index.js",
+    )
+    for name in required:
         assert (SRC / name).is_file()
-    assert 'ORDER = ["api.js", "components.js", "app.js", "index.js"]' in BUILD
+    assert "COMPATIBILITY_ORDER = [" in BUILD
+    assert '"resource_selector_v5.js"' in BUILD
+    assert 'CANONICAL_ENTRY = "canonical_ui.js"' in BUILD
+    assert 'REGISTER_ENTRY = "index.js"' in BUILD
+    assert "validate_baseline" in BUILD
     assert 'dist" / "index.js"' in BUILD
-    assert "_normalize_bundle" in BUILD
-    assert "_TASK_CARD_BAD" in BUILD and "_TASK_CARD_GOOD" in BUILD
+    canonical = (SRC / "canonical_ui.js").read_text("utf-8")
+    index = (SRC / "index.js").read_text("utf-8")
+    assert "CanonicalManagementApp" in canonical
+    assert "legacy modules may not replace the main UI" in canonical
+    assert "CanonicalManagementApp" in index
 
 
 def test_management_center_has_complete_tabs_and_states() -> None:
     for tab in ("overview", "agents", "projects", "tasks", "wechat"):
-        assert f'"{tab}"' in JS
-    assert "projectSupported" in JS
-    assert "Native Projects unavailable" in JS
-    assert "Loading Management Center" in JS
+        assert f'"{tab}"' in CORE_JS
+    assert "projectSupported" in CORE_JS
+    assert "Native Projects unavailable" in CORE_JS
+    assert "Loading Management Center" in CORE_JS
 
 
 def test_agent_project_task_management_surfaces_remain_complete() -> None:
@@ -34,45 +53,53 @@ def test_agent_project_task_management_surfaces_remain_complete() -> None:
         "Create Project", "Use project", "add_folder", "remove_folder", "set_primary", "assign_agent",
         "Create Task", "Run now", "Pause", "Resume", "Delete Task", "Archive Task", "Priority", "Deliver", "Execution history",
     ):
-        assert token in JS
+        assert token in CORE_JS
 
 
 def test_wechat_tab_never_auto_scans_desktop() -> None:
-    assert 'if (tab === "wechat") loadHealth(false)' in JS
-    assert 'if (tab === "wechat") loadWeChat(true)' not in JS
-    assert "checkWeChatDesktop" in JS
-    assert "Opening this tab never touches the desktop app" in JS
-    assert "/wechat/status" in JS
-    assert "/wechat/chats?limit=200" in JS
-    assert "/wechat/unread" not in JS
+    assert 'if (tab === "wechat") loadHealth(false)' in CORE_JS
+    assert 'if (tab === "wechat") loadWeChat(true)' not in CORE_JS
+    assert "checkWeChatDesktop" in CORE_JS
+    assert "Opening this tab never touches the desktop app" in CORE_JS
+    assert "/wechat/status" in CORE_JS
+    assert "/wechat/chats?limit=200" in CORE_JS
+    assert "/wechat/unread" not in CORE_JS
 
 
 def test_refresh_is_context_aware_and_auto_refresh_is_visibility_guarded() -> None:
-    assert "refreshCurrent" in JS
-    assert 'if (tab === "tasks")' in JS
-    assert 'if (tab === "wechat")' in JS
-    assert 'document.visibilityState !== "visible"' in JS
-    assert "15000" in JS and "30000" in JS
-    assert "loadHealth(true)" in JS
+    assert "refreshCurrent" in CORE_JS
+    assert 'if (tab === "tasks")' in CORE_JS
+    assert 'if (tab === "wechat")' in CORE_JS
+    assert 'document.visibilityState !== "visible"' in CORE_JS
+    assert "15000" in CORE_JS and "30000" in CORE_JS
+    assert "loadHealth(true)" in CORE_JS
 
 
 def test_dialogs_are_accessible_and_protect_unsaved_changes() -> None:
-    assert "focusables" in JS
-    assert 'e.key === "Tab"' in JS
-    assert "previousFocus" in JS
-    assert "Discard unsaved changes?" in JS
-    assert "ConfirmDialog" in JS
-    assert "guardedClose" in JS
-    assert "DIALOG_STACK" in JS
-    assert "closeRef" in JS
-    assert "confirm(" not in JS
+    assert "focusables" in CORE_JS
+    assert 'e.key === "Tab"' in CORE_JS
+    assert "previousFocus" in CORE_JS
+    assert "Discard unsaved changes?" in CORE_JS
+    assert "ConfirmDialog" in CORE_JS
+    assert "guardedClose" in CORE_JS
+    assert "DIALOG_STACK" in CORE_JS
+    assert "closeRef" in CORE_JS
+    assert "confirm(" not in CORE_JS
 
 
 def test_dirty_edits_block_refreshing_lifecycle_actions() -> None:
-    assert "Save or discard edits before running lifecycle actions" in JS
-    assert "const blockAction = Boolean(busy) || projectDirty" in JS
-    assert "const blockAction = Boolean(busy) || taskDirty" in JS
-    assert "Boolean(busy) || agentDirty" in JS
+    assert "Save or discard edits before running lifecycle actions" in CORE_JS
+    assert "const blockAction = Boolean(busy) || projectDirty" in CORE_JS
+    assert "const blockAction = Boolean(busy) || taskDirty" in CORE_JS
+    assert "Boolean(busy) || agentDirty" in CORE_JS
+
+
+def test_resource_selector_preserves_browser_choice_and_hides_offline_rows() -> None:
+    assert "managed:chrome" in RESOURCE_JS
+    assert "managed:edge" in RESOURCE_JS
+    assert "iXBrowser" in RESOURCE_JS
+    assert 'String(row.status || "").toLowerCase() !== "offline"' in RESOURCE_JS
+    assert "Connect / Launch Browser" in RESOURCE_JS
 
 
 def test_mobile_and_focus_styles_are_touch_friendly() -> None:
