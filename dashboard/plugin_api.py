@@ -20,7 +20,15 @@ except Exception:
     )
     raise
 
+# Stable entry contract: Hermes always imports this file, while callers/tests that
+# historically imported compatibility models from plugin_api.py keep working.
 router = active_api.router
+compat = active_api.base.compat
+AgentBody = active_api.AgentBody
+AgentActionBody = active_api.AgentActionBody
+StrictBody = active_api.StrictBody
+ManagementCenter = active_api.ManagementCenter
+TaskCenter = active_api.TaskCenter
 
 logger.info(
     "[ControlCenter] API bootstrap: stable_entry=%s active_api=%s route_count=%d",
