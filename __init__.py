@@ -3,7 +3,7 @@
 from collections.abc import Iterable
 from typing import Any
 
-from .compatibility import install_hermes_cli_compat
+from .compatibility import detect_capabilities, install_hermes_cli_compat
 
 install_hermes_cli_compat()
 
@@ -29,7 +29,9 @@ def _register_group(ctx, toolset: str, specs: Iterable[ToolSpec], *, check_fn=No
 
 
 def register(ctx):
-    ctx.register_hook("pre_tool_call", resource_pre_tool_call)
+    register_hook = getattr(ctx, "register_hook", None)
+    if callable(register_hook):
+        register_hook("pre_tool_call", resource_pre_tool_call)
 
     _register_group(
         ctx,
@@ -66,20 +68,22 @@ def register(ctx):
         ],
     )
 
-    _register_group(
-        ctx,
-        "hermes_extensions_management",
-        [
-            ("management_overview", schemas.MANAGEMENT_OVERVIEW, tools.management_overview),
-            ("agent_list", schemas.AGENT_LIST, tools.agent_list),
-            ("agent_get", schemas.AGENT_GET, tools.agent_get),
-            ("agent_create", schemas.AGENT_CREATE, tools.agent_create),
-            ("agent_update", schemas.AGENT_UPDATE, tools.agent_update),
-            ("agent_action", schemas.AGENT_ACTION, tools.agent_action),
-            ("project_list", schemas.PROJECT_LIST, tools.project_list),
-            ("project_get", schemas.PROJECT_GET, tools.project_get),
-            ("project_create", schemas.PROJECT_CREATE, tools.project_create),
-            ("project_update", schemas.PROJECT_UPDATE, tools.project_update),
-            ("project_action", schemas.PROJECT_ACTION, tools.project_action),
-        ],
-    )
+    management_specs: list[ToolSpec] = [
+        ("management_overview", schemas.MANAGEMENT_OVERVIEW, tools.management_overview),
+        ("agent_list", schemas.AGENT_LIST, tools.agent_list),
+        ("agent_get", schemas.AGENT_GET, tools.agent_get),
+        ("agent_create", schemas.AGENT_CREATE, tools.agent_create),
+        ("agent_update", schemas.AGENT_UPDATE, tools.agent_update),
+        ("agent_action", schemas.AGENT_ACTION, tools.agent_action),
+    ]
+    if detect_capabilities().project:
+        management_specs.extend(
+            [
+                ("project_list", schemas.PROJECT_LIST, tools.project_list),
+                ("project_get", schemas.PROJECT_GET, tools.project_get),
+                ("project_create", schemas.PROJECT_CREATE, tools.project_create),
+                ("project_update", schemas.PROJECT_UPDATE, tools.project_update),
+                ("project_action", schemas.PROJECT_ACTION, tools.project_action),
+            ]
+        )
+    _register_group(ctx, "hermes_extensions_management", management_specs)
