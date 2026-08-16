@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .context import root_hermes_home
-from .discovery import discover_resources
+from .discovery_v2 import discover_resources
 
 
 class ResourceRegistry:
