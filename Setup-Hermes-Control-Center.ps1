@@ -21,7 +21,7 @@ $env:HERMES_HOME = $HermesHome
 $OfficialHermesInstaller = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1"
 $HermesVersionSource = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/pyproject.toml"
 $ControlCenterVersionSource = "https://raw.githubusercontent.com/Neal86/Hermes-Control-Center/main/plugin.yaml"
-$ControlCenterZip = "https://github.com/Neal86/Hermes-Control-Center/archive/refs/heads/main.zip"
+$ControlCenterBranchApi = "https://api.github.com/repos/Neal86/Hermes-Control-Center/branches/main"
 
 function Write-Step([string]$Message) {
     Write-Host ""
@@ -29,7 +29,7 @@ function Write-Step([string]$Message) {
 }
 
 function Get-RemoteText([string]$Uri) {
-    try { return (Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 15).Content }
+    try { return (Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 15 -Headers @{ "Cache-Control" = "no-cache" }).Content }
     catch { return $null }
 }
 
@@ -56,6 +56,17 @@ function Read-ManifestVersion([string]$Path) {
     try {
         $text = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
         if ($text -match '(?m)^version:\s*["'']?([^\s"'']+)["'']?\s*$') { return $Matches[1].Trim() }
+    } catch {}
+    return $null
+}
+
+function Get-ControlCenterMainSha {
+    try {
+        $json = Get-RemoteText $ControlCenterBranchApi
+        if (-not $json) { return $null }
+        $branch = $json | ConvertFrom-Json
+        $sha = [string]$branch.commit.sha
+        if ($sha -match '^[0-9a-f]{40}$') { return $sha }
     } catch {}
     return $null
 }
@@ -201,17 +212,35 @@ function Install-LatestControlCenter([string]$LatestVersion) {
         return
     }
 
-    Write-Step ("Downloading Hermes Control Center v" + $LatestVersion)
+    $mainSha = Get-ControlCenterMainSha
+    if (-not $mainSha) { throw "Could not resolve the current GitHub main commit SHA. Refusing an unpinned update." }
+    $controlCenterZip = "https://github.com/Neal86/Hermes-Control-Center/archive/$mainSha.zip"
+
+    Write-Step ("Downloading Hermes Control Center v" + $LatestVersion + " from commit " + $mainSha.Substring(0, 12))
     $tempRoot = Join-Path $env:TEMP ("hermes-control-center-" + [Guid]::NewGuid().ToString("N"))
     $zip = Join-Path $tempRoot "control-center.zip"
     $extract = Join-Path $tempRoot "src"
     try {
         New-Item -ItemType Directory -Force -Path $tempRoot, $extract | Out-Null
-        Invoke-WebRequest -UseBasicParsing -Uri $ControlCenterZip -OutFile $zip
+        Invoke-WebRequest -UseBasicParsing -Uri $controlCenterZip -OutFile $zip -Headers @{ "Cache-Control" = "no-cache" }
         Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
+
+        $manifest = Get-ChildItem -LiteralPath $extract -Filter "plugin.yaml" -File -Recurse | Select-Object -First 1
+        if (-not $manifest) { throw "Downloaded Control Center package does not contain plugin.yaml." }
+        $packageVersion = Read-ManifestVersion $manifest.FullName
+        if (-not $packageVersion -or $packageVersion -ne $LatestVersion) {
+            throw "Downloaded package version mismatch. Expected v$LatestVersion but commit $mainSha contains v$packageVersion. Update aborted."
+        }
+
         $installer = Get-ChildItem -LiteralPath $extract -Filter "install.ps1" -File -Recurse | Select-Object -First 1
         if (-not $installer) { throw "Downloaded Control Center package does not contain install.ps1." }
         Run-PluginInstaller $installer.FullName
+
+        $installedAfter = Get-ControlCenterInstalledVersion
+        if ($installedAfter -ne $LatestVersion) {
+            throw "Control Center install verification failed. Expected v$LatestVersion but installed v$installedAfter."
+        }
+        Write-Host ("Verified Control Center v" + $installedAfter + " from commit " + $mainSha.Substring(0, 12) + ".") -ForegroundColor Green
     } finally {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
