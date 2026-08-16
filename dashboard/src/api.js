@@ -10,6 +10,55 @@
   HX.React = SDK.React;
   HX.h = SDK.React.createElement;
   HX.TABS = ["overview", "agents", "projects", "tasks"];
+
+  function splitPath(path) {
+    const q = String(path || "").indexOf("?");
+    return q >= 0 ? { pathname: path.slice(0, q), query: path.slice(q + 1) } : { pathname: path, query: "" };
+  }
+
+  function addQuery(path, key, value) {
+    const sep = path.indexOf("?") >= 0 ? "&" : "?";
+    return path + sep + encodeURIComponent(key) + "=" + encodeURIComponent(value);
+  }
+
+  function fixedPluginPath(path, init) {
+    const method = String((init && init.method) || "GET").toUpperCase();
+    const parts = splitPath(String(path || ""));
+    const pathname = parts.pathname;
+    const query = parts.query ? "?" + parts.query : "";
+    let match;
+
+    match = pathname.match(/^\/agents\/([^/]+)\/action$/);
+    if (match) return addQuery("/agent/action" + query, "name", decodeURIComponent(match[1]));
+
+    match = pathname.match(/^\/agents\/([^/]+)\/resources$/);
+    if (match) return addQuery("/agent/resources" + query, "agent", decodeURIComponent(match[1]));
+
+    match = pathname.match(/^\/agents\/([^/]+)\/browser$/);
+    if (match) return addQuery("/agent/browser" + query, "agent", decodeURIComponent(match[1]));
+
+    match = pathname.match(/^\/agents\/([^/]+)\/wechat\/status$/);
+    if (match) return addQuery("/agent/wechat/status" + query, "agent", decodeURIComponent(match[1]));
+
+    match = pathname.match(/^\/agents\/([^/]+)\/wechat\/dry-run$/);
+    if (match) return addQuery("/agent/wechat/dry-run" + query, "agent", decodeURIComponent(match[1]));
+
+    match = pathname.match(/^\/agents\/([^/]+)$/);
+    if (match && ["GET", "PATCH", "DELETE"].indexOf(method) >= 0) {
+      return addQuery("/agent" + query, "name", decodeURIComponent(match[1]));
+    }
+
+    match = pathname.match(/^\/providers\/([^/]+)$/);
+    if (match && method === "PUT") return addQuery("/provider" + query, "provider", decodeURIComponent(match[1]));
+
+    match = pathname.match(/^\/resources\/(.+)\/bind$/);
+    if (match && ["POST", "DELETE"].indexOf(method) >= 0) {
+      return addQuery("/resource/bind" + query, "resource_id", decodeURIComponent(match[1]));
+    }
+
+    return path;
+  }
+
   HX.request = function request(path, init) {
     // WeChat discovery/binding/status lives under the Resources section now.
     // Legacy Control code may still ask for gateway health; satisfy it locally
@@ -19,7 +68,7 @@
     }
     const options = Object.assign({}, init || {});
     if (options.body && !options.headers) options.headers = { "Content-Type": "application/json" };
-    return SDK.fetchJSON(API + path, options);
+    return SDK.fetchJSON(API + fixedPluginPath(path, options), options);
   };
   HX.errText = function errText(error) {
     if (!error) return "Unknown error";
