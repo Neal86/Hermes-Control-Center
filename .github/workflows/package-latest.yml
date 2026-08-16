@@ -35,7 +35,7 @@ jobs:
           PY
       - name: Build dashboard bundle
         run: python dashboard/build_bundle.py
-      - name: Build ZIP from exact commit
+      - name: Prepare single-layer package from exact commit
         run: |
           OUT="Hermes-Control-Center-main"
           mkdir -p "package/$OUT"
@@ -52,10 +52,9 @@ jobs:
           PY
           )
           printf 'version=%s\ncommit=%s\n' "$VERSION" "$GITHUB_SHA" > "package/$OUT/BUILD_INFO.txt"
-          cd package
-          zip -qr "Hermes-Control-Center-main.zip" "$OUT"
       - uses: actions/upload-artifact@v4
         with:
           name: Hermes-Control-Center-main
-          path: package/Hermes-Control-Center-main.zip
+          path: package/Hermes-Control-Center-main/
+          include-hidden-files: true
           if-no-files-found: error
