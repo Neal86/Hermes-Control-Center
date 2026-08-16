@@ -4,7 +4,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pluginYaml = Join-Path $root "plugin.yaml"
 $version = ""
-$apiTarget = "plugin_api_v3.py"
+$apiTarget = "plugin_api.py"
 if (Test-Path -LiteralPath $pluginYaml) {
     $text = Get-Content -LiteralPath $pluginYaml -Raw -Encoding UTF8
     if ($text -match '(?m)^version:\s*["'']?([^\s"'']+)["'']?\s*$') { $version = $Matches[1].Trim() }
