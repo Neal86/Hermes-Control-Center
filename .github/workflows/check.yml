@@ -28,7 +28,7 @@ jobs:
           ruff check .
       - name: Build and validate Dashboard
         run: |
-          for file in dashboard/src/api.js dashboard/src/components.js dashboard/src/app.js dashboard/src/index.js; do node --check "$file"; done
+          for file in dashboard/src/*.js; do node --check "$file"; done
           python dashboard/build_bundle.py
           node --check dashboard/dist/index.js
       - name: Run tests
@@ -36,17 +36,22 @@ jobs:
       - name: Validate standalone repository surfaces
         run: |
           python - <<'PY'
-          import json
+          import json, re
           from pathlib import Path
           root = Path('.')
+          plugin_text = (root/'plugin.yaml').read_text('utf-8')
+          match = re.search(r'(?m)^version:\s*["\']?([^\s"\']+)', plugin_text)
+          assert match, 'plugin.yaml version missing'
+          plugin_version = match.group(1)
           manifest = json.loads((root/'dashboard/manifest.json').read_text('utf-8'))
-          assert manifest['version'] == '0.5.11'
+          assert manifest['version'] == plugin_version
           assert manifest['entry'] == 'dist/index.js'
           assert manifest['api'] == 'plugin_api.py'
           assert manifest['icon'] == 'Activity'
           required = [
               'plugin.yaml','install.ps1','doctor.ps1','compatibility.py','tools.py','schemas.py',
-              'dashboard/plugin_api.py','dashboard/build_bundle.py','dashboard/src/app.js',
+              'dashboard/plugin_api.py','dashboard/build_bundle.py','dashboard/source-baseline.json',
+              'dashboard/src/app.js','dashboard/src/canonical_ui.js','dashboard/src/resource_selector_v5.js',
               'management/service.py','management/overview.py','task_center/service_v3.py',
               'providers/service.py','resources/bindings.py','resources/policy.py',
               'wechat/adapter.py','wechat/runtime.py','platforms/wechat-desktop/adapter.py',
