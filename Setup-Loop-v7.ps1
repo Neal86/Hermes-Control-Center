@@ -111,13 +111,43 @@ function Test-PackageComplete {
 function Normalize-PluginState {
     param([ValidateSet("prepare","finalize")][string]$Mode = "finalize")
     $python = Find-HermesPython
-    if (-not $python -or -not (Test-Path -LiteralPath $PluginStateHelper)) { return 2 }
+    if (-not $python -or -not (Test-Path -LiteralPath $PluginStateHelper -PathType Leaf)) { return 2 }
     $out = Join-Path $LogDir ("plugin-state-" + $Mode + ".out.log")
     $err = Join-Path $LogDir ("plugin-state-" + $Mode + ".err.log")
     Remove-Item $out,$err -Force -ErrorAction SilentlyContinue
-    $proc = Start-Process -FilePath $python -ArgumentList @($PluginStateHelper,$ConfigPath,$Mode) -WorkingDirectory $Root -Wait -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
-    Show-Log $out; Show-Log $err
-    return [int]$proc.ExitCode
+
+    # Start-Process flattens -ArgumentList into a command line. On Windows that can
+    # misparse paths containing parentheses/spaces and make Python treat the package
+    # directory as its script. ProcessStartInfo.ArgumentList preserves each argv item.
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $python
+    $psi.WorkingDirectory = $Root
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    [void]$psi.ArgumentList.Add($PluginStateHelper)
+    [void]$psi.ArgumentList.Add($ConfigPath)
+    [void]$psi.ArgumentList.Add($Mode)
+
+    $proc = [System.Diagnostics.Process]::new()
+    $proc.StartInfo = $psi
+    try {
+        if (-not $proc.Start()) { return 2 }
+        $stdout = $proc.StandardOutput.ReadToEnd()
+        $stderr = $proc.StandardError.ReadToEnd()
+        $proc.WaitForExit()
+        [System.IO.File]::WriteAllText($out, $stdout, [System.Text.UTF8Encoding]::new($false))
+        [System.IO.File]::WriteAllText($err, $stderr, [System.Text.UTF8Encoding]::new($false))
+        Show-Log $out; Show-Log $err
+        return [int]$proc.ExitCode
+    } catch {
+        [System.IO.File]::WriteAllText($err, $_.Exception.ToString(), [System.Text.UTF8Encoding]::new($false))
+        Show-Log $err
+        return 2
+    } finally {
+        $proc.Dispose()
+    }
 }
 function Stop-DashboardAfterPluginUpdate {
     $hermes = Get-Command hermes -ErrorAction SilentlyContinue
