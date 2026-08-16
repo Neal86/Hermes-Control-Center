@@ -1,21 +1,40 @@
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
-
-from fastapi import APIRouter
 
 DASHBOARD_ROOT = Path(__file__).resolve().parent
 if str(DASHBOARD_ROOT) not in sys.path:
     sys.path.insert(0, str(DASHBOARD_ROOT))
 
-from browser_api import router as browser_router
-from model_discovery_api import router as model_router
-from plugin_api_v2 import router as v2_router
-from extra_api import router as write_router
+logger = logging.getLogger("hermes_control_center.api")
 
-router = APIRouter()
-router.include_router(model_router)
-router.include_router(v2_router)
-router.include_router(write_router)
-router.include_router(browser_router)
+try:
+    import plugin_api_v3 as active_api
+except Exception:
+    logger.exception(
+        "Control Center API bootstrap failed: stable_entry=%s active_module=plugin_api_v3.py",
+        Path(__file__).resolve(),
+    )
+    raise
+
+router = active_api.router
+
+logger.info(
+    "Control Center API bootstrap: stable_entry=%s active_api=%s route_count=%d",
+    Path(__file__).resolve(),
+    Path(active_api.__file__).resolve(),
+    len(getattr(router, "routes", [])),
+)
+
+for route in getattr(router, "routes", []):
+    methods = sorted(getattr(route, "methods", None) or [])
+    path = getattr(route, "path", "")
+    name = getattr(route, "name", "")
+    logger.info(
+        "Control Center API route: methods=%s path=%s name=%s",
+        ",".join(methods) if methods else "-",
+        path,
+        name,
+    )
