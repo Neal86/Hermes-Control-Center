@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import ConfigDict, BaseModel, Field
 
 import plugin_api_v2 as base
+import extra_api as extra
 
 logger = logging.getLogger("hermes_control_center.api")
 
@@ -53,12 +54,129 @@ def _server_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=str(exc))
 
 
+def _agent_get_impl(name: str) -> dict[str, Any]:
+    data = ManagementCenter().agent_get(name)
+    data["tasks"] = TaskCenter().overview(profile=name, include_completed=True)
+    return data
+
+
+def _agent_update_impl(name: str, body: AgentBody) -> dict[str, Any]:
+    return ManagementCenter().agent_update(name, body.model_dump(exclude_none=True))
+
+
+def _agent_action_impl(name: str, body: AgentActionBody) -> dict[str, Any]:
+    return ManagementCenter().agent_action(name, body.action, body.value)
+
+
+def _agent_delete_impl(name: str) -> dict[str, Any]:
+    return ManagementCenter().agent_delete(name)
+
+
+# Fixed-path compatibility endpoints. Hermes' outer plugin API matcher may reject
+# dynamic subpaths before they reach FastAPI, so the Dashboard routes all
+# parameterized operations through these stable paths.
+@router.get("/agent")
+def agent_get_fixed(name: str) -> dict[str, Any]:
+    logger.info("Control Center fixed API entered: GET /agent name=%s", name)
+    try:
+        result = _agent_get_impl(name)
+        logger.info("Control Center fixed API completed: GET /agent name=%s", name)
+        return result
+    except ValueError as exc:
+        logger.exception("Control Center fixed API value error: GET /agent name=%s", name)
+        raise _bad_request(exc) from exc
+    except Exception as exc:
+        logger.exception("Control Center fixed API failed: GET /agent name=%s", name)
+        raise _server_error(exc) from exc
+
+
+@router.patch("/agent")
+def agent_update_fixed(name: str, body: AgentBody) -> dict[str, Any]:
+    logger.info("Control Center fixed API entered: PATCH /agent name=%s", name)
+    try:
+        return _agent_update_impl(name, body)
+    except ValueError as exc:
+        logger.exception("Control Center fixed API value error: PATCH /agent name=%s", name)
+        raise _bad_request(exc) from exc
+    except Exception as exc:
+        logger.exception("Control Center fixed API failed: PATCH /agent name=%s", name)
+        raise _server_error(exc) from exc
+
+
+@router.delete("/agent")
+def agent_delete_fixed(name: str) -> dict[str, Any]:
+    logger.info("Control Center fixed API entered: DELETE /agent name=%s", name)
+    try:
+        return _agent_delete_impl(name)
+    except ValueError as exc:
+        logger.exception("Control Center fixed API value error: DELETE /agent name=%s", name)
+        raise _bad_request(exc) from exc
+    except Exception as exc:
+        logger.exception("Control Center fixed API failed: DELETE /agent name=%s", name)
+        raise _server_error(exc) from exc
+
+
+@router.post("/agent/action")
+def agent_action_fixed(name: str, body: AgentActionBody) -> dict[str, Any]:
+    logger.info("Control Center fixed API entered: POST /agent/action name=%s action=%s", name, body.action)
+    try:
+        return _agent_action_impl(name, body)
+    except ValueError as exc:
+        logger.exception("Control Center fixed API value error: POST /agent/action name=%s action=%s", name, body.action)
+        raise _bad_request(exc) from exc
+    except Exception as exc:
+        logger.exception("Control Center fixed API failed: POST /agent/action name=%s action=%s", name, body.action)
+        raise _server_error(exc) from exc
+
+
+@router.put("/provider")
+def provider_save_fixed(provider: str, body: base.ProviderBody, profile: str = "default") -> dict[str, Any]:
+    logger.info("Control Center fixed API entered: PUT /provider provider=%s profile=%s", provider, profile)
+    return base.provider_save(provider, body, profile)
+
+
+@router.post("/resource/bind")
+def resource_bind_fixed(resource_id: str, body: extra.BindingBody) -> dict[str, Any]:
+    logger.info("Control Center fixed API entered: POST /resource/bind resource_id=%s agent=%s", resource_id, body.agent)
+    return extra.bind_resource(resource_id, body)
+
+
+@router.delete("/resource/bind")
+def resource_unbind_fixed(resource_id: str) -> dict[str, Any]:
+    logger.info("Control Center fixed API entered: DELETE /resource/bind resource_id=%s", resource_id)
+    return extra.unbind_resource(resource_id)
+
+
+@router.get("/agent/resources")
+def agent_resources_fixed(agent: str, refresh: bool = True) -> dict[str, Any]:
+    logger.info("Control Center fixed API entered: GET /agent/resources agent=%s", agent)
+    return extra.agent_resources(agent, refresh)
+
+
+@router.get("/agent/browser")
+def agent_browser_fixed(agent: str) -> dict[str, Any]:
+    logger.info("Control Center fixed API entered: GET /agent/browser agent=%s", agent)
+    return extra.agent_browser(agent)
+
+
+@router.get("/agent/wechat/status")
+def agent_wechat_status_fixed(agent: str, resource_id: str | None = None) -> dict[str, Any]:
+    logger.info("Control Center fixed API entered: GET /agent/wechat/status agent=%s", agent)
+    return extra.bound_wechat_status(agent, resource_id)
+
+
+@router.post("/agent/wechat/dry-run")
+def agent_wechat_dry_run_fixed(agent: str, body: extra.WeChatBoundDryRunBody) -> dict[str, Any]:
+    logger.info("Control Center fixed API entered: POST /agent/wechat/dry-run agent=%s", agent)
+    return extra.bound_wechat_dry_run(agent, body)
+
+
+# Keep the original dynamic routes for newer Hermes versions and direct FastAPI use.
 @router.get("/agents/{name}")
 def agent_get(name: str) -> dict[str, Any]:
     logger.info("Control Center API entered: GET /agents/%s", name)
     try:
-        data = ManagementCenter().agent_get(name)
-        data["tasks"] = TaskCenter().overview(profile=name, include_completed=True)
+        data = _agent_get_impl(name)
         logger.info("Control Center API completed: GET /agents/%s", name)
         return data
     except ValueError as exc:
@@ -88,7 +206,7 @@ def agent_create(body: AgentBody) -> dict[str, Any]:
 def agent_update(name: str, body: AgentBody) -> dict[str, Any]:
     logger.info("Control Center API entered: PATCH /agents/%s", name)
     try:
-        result = ManagementCenter().agent_update(name, body.model_dump(exclude_none=True))
+        result = _agent_update_impl(name, body)
         logger.info("Control Center API completed: PATCH /agents/%s", name)
         return result
     except ValueError as exc:
@@ -103,7 +221,7 @@ def agent_update(name: str, body: AgentBody) -> dict[str, Any]:
 def agent_action(name: str, body: AgentActionBody) -> dict[str, Any]:
     logger.info("Control Center API entered: POST /agents/%s/action action=%s", name, body.action)
     try:
-        result = ManagementCenter().agent_action(name, body.action, body.value)
+        result = _agent_action_impl(name, body)
         logger.info("Control Center API completed: POST /agents/%s/action action=%s", name, body.action)
         return result
     except ValueError as exc:
@@ -118,7 +236,7 @@ def agent_action(name: str, body: AgentActionBody) -> dict[str, Any]:
 def agent_delete(name: str) -> dict[str, Any]:
     logger.info("Control Center API entered: DELETE /agents/%s", name)
     try:
-        result = ManagementCenter().agent_delete(name)
+        result = _agent_delete_impl(name)
         logger.info("Control Center API completed: DELETE /agents/%s", name)
         return result
     except ValueError as exc:
