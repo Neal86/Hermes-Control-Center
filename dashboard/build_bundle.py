@@ -10,6 +10,7 @@ from pathlib import Path
 # index.js registers only that canonical app with Hermes.
 COMPATIBILITY_ORDER = [
     "api.js",
+    "resource_selector_v5.js",
     "components.js",
     "app.js",
     "control_center_v2.js",
