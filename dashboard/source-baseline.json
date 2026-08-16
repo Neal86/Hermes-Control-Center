@@ -1,10 +1,11 @@
 {
   "schema": 1,
-  "golden_main_commit": "d45a71fe5dc82a382dd1bfd08f83099189451634",
+  "golden_main_commit": "9b3aa1b0202383490b7a0bc7023643042c1a450f",
   "canonical_entry": "src/canonical_ui.js",
   "policy": "Dashboard builds must start from the current main line. Legacy compatibility modules may not be silently replaced; intentional changes require an explicit baseline refresh from the then-current main HEAD.",
   "sources": {
     "api.js": "ad1af2e2a40f43480abfa71d8d01e13ac79d98a5",
+    "resource_selector_v5.js": "350e850e2a76877649b734298a509df327f850b5",
     "components.js": "f6f6a44030659ab9a6e5d1ec0461c4040e505194",
     "app.js": "b59122bf850403b69bd991f9a91493fbb755ba9f",
     "control_center_v2.js": "d80b17e108d63f8f77518bca49a9002d3d4e195e",
