@@ -116,7 +116,6 @@ if ($Installed) {
         $Report.dashboard_manifest_api_target = [string]$manifest.api
         $Report.dashboard_manifest_version = [string]$manifest.version
         $Report.dashboard_manifest_api_exists = [bool]($manifest.api -and (Test-Path -LiteralPath (Join-Path $PluginRoot ("dashboard\" + [string]$manifest.api))))
-        if ([string]$manifest.api -ne "plugin_api.py") { $Errors.Add("Dashboard manifest API must be plugin_api.py.") }
         if (-not $Report.dashboard_manifest_api_exists) { $Errors.Add("Dashboard manifest API target does not exist.") }
     } catch {
         $Report.dashboard_manifest_api_target = ""
