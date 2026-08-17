@@ -11,7 +11,7 @@ from typing import Any
 
 from .browser_manager import probe_cdp
 
-_BROWSER_EXES = {"chrome.exe": "chrome", "msedge.exe": "edge"}
+_BROWSER_EXES = {"chrome.exe": "chrome", "msedge.exe": "edge", "ixbrowser.exe": "ixbrowser"}
 _WECHAT_EXES = {"wechat.exe", "weixin.exe", "wechatappex.exe"}
 _PROFILE_RE = re.compile(r"--profile-directory(?:=|\s+)(?:\"([^\"]+)\"|'([^']+)'|([^\s]+))", re.I)
 _USER_DATA_RE = re.compile(r"--user-data-dir(?:=|\s+)(?:\"([^\"]+)\"|'([^']+)'|([^\s]+))", re.I)
@@ -88,11 +88,12 @@ def _process_rows() -> list[dict[str, Any]]:
 
 
 def _wechat_conversation_title(hwnd: int) -> str:
-    """Best-effort read of the active chat header using Windows UI Automation.
+    """Best-effort explicit UIA probe for callers that need the active chat title.
 
-    WeChat's top-level Win32 window title is usually just "微信"/"WeChat". The
-    useful identifier is the active conversation header inside the client. This
-    routine only reads UI Automation metadata; it does not click or modify UI.
+    Resource discovery intentionally does not call this function. UI Automation
+    can block for several seconds per WeChat instance, so running it during the
+    Resources page refresh caused long serial stalls when multiple WeChat
+    processes were open.
     """
     if platform.system() != "Windows" or not hwnd:
         return ""
@@ -116,9 +117,6 @@ foreach ($el in $all) {
     $rows += [pscustomobject]@{ Name=$name.Trim(); X=$br.X; Y=$br.Y; W=$br.Width; H=$br.Height; Type=$ct }
   } catch {}
 }
-# The active conversation header is normally in the upper center/right content
-# pane. Restrict candidates to that band so chat messages/sidebar names do not
-# get mistaken for the header.
 $candidates = $rows | Where-Object {
   $_.Y -ge ($rr.Y + 15) -and $_.Y -le ($rr.Y + 115) -and
   $_.X -ge ($rr.X + [Math]::Min(260, $rr.Width * 0.24)) -and
@@ -128,7 +126,6 @@ $candidates = $rows | Where-Object {
   $_.Name -notmatch '^(微信|WeChat|搜索|Search|聊天|通讯录|收藏|朋友圈|小程序|视频号)$'
 }
 if (-not $candidates) { exit 0 }
-# Prefer text-like controls near the top and toward the center of the content pane.
 $best = $candidates | Sort-Object `
   @{Expression={ if ($_.Type -match 'Text|Button') {0} else {1} }}, `
   @{Expression={ [Math]::Abs($_.Y - ($rr.Y + 55)) }}, `
@@ -178,13 +175,10 @@ def discover_resources() -> list[dict[str, Any]]:
         if name in _WECHAT_EXES:
             if not process_windows:
                 continue
-            # Window titles change with the active chat and must never participate
-            # in identity. One running WeChat process is one bindable resource.
             win = process_windows[0]
             resource_id = _stable_id("wechat", exe_path or name, instance=str(pid))
             if resource_id not in seen:
                 seen.add(resource_id)
-                conversation_title = _wechat_conversation_title(int(win["hwnd"]))
                 resources.append({
                     "id": resource_id,
                     "kind": "wechat",
@@ -192,7 +186,7 @@ def discover_resources() -> list[dict[str, Any]]:
                     "pid": pid,
                     "hwnd": win["hwnd"],
                     "title": win["title"],
-                    "conversation_title": conversation_title,
+                    "conversation_title": "",
                     "exe": exe_path or name,
                     "profile": "",
                     "user_data_dir": "",
@@ -212,10 +206,6 @@ def discover_resources() -> list[dict[str, Any]]:
         port_text = _match(_REMOTE_PORT_RE, command)
         port = int(port_text) if port_text else None
 
-        # A command-line switch alone is not enough. Modern Chrome can ignore
-        # remote-debugging switches for the normal default data directory. We
-        # therefore probe /json/version and only call a browser attachable when
-        # the loopback DevTools endpoint actually answers with a websocket URL.
         if port is None:
             attachable = False
             attach_reason = "remote_debugging_not_enabled"
