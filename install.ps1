@@ -173,7 +173,21 @@ if (-not $SkipDependencies) {
     } catch {}
     if (-not $installed) {
         $uv = Get-Command uv -ErrorAction SilentlyContinue
-        if ($uv) { $uvOutput = & $uv.Source pip install --python $HermesPython -r $Requirements 2>&1; $uvExit = $LASTEXITCODE; $uvOutput | ForEach-Object { Write-Host ([string]$_) }; if ($uvExit -eq 0) { $installed = $true } }
+        if ($uv) {
+            # Windows PowerShell 5.1 can surface native stderr as NativeCommandError when
+            # $ErrorActionPreference is Stop. uv writes normal progress/status lines to stderr,
+            # so temporarily relax error-action handling and decide success only by exit code.
+            $previousErrorActionPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = "Continue"
+                $uvOutput = & $uv.Source pip install --python $HermesPython -r $Requirements 2>&1
+                $uvExit = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $previousErrorActionPreference
+            }
+            $uvOutput | ForEach-Object { Write-Host ([string]$_) }
+            if ($uvExit -eq 0) { $installed = $true }
+        }
     }
     if (-not $installed) { throw "Unable to install Control Center dependencies into Hermes Python." }
 }
@@ -231,7 +245,10 @@ try {
     if (Test-Path -LiteralPath $PlatformTarget) { Remove-Item -LiteralPath $PlatformTarget -Recurse -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $BackupPlugin) { Move-Item -LiteralPath $BackupPlugin -Destination $Target -Force }
     if (Test-Path -LiteralPath $BackupPlatform) { Move-Item -LiteralPath $BackupPlatform -Destination $PlatformTarget -Force }
-    if (Test-Path -LiteralPath $BackupLegacyNestedPlatform) { New-Item -ItemType Directory -Force -Path (Split-Path $LegacyNestedPlatformTarget -Parent) | Out-Null; Move-Item -LiteralPath $BackupLegacyNestedPlatform -Destination $LegacyNestedPlatformTarget -Force }
+    if (Test-Path -LiteralPath $BackupLegacyNestedPlatform) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $LegacyNestedPlatformTarget -Parent) | Out-Null
+        Move-Item -LiteralPath $BackupLegacyNestedPlatform -Destination $LegacyNestedPlatformTarget -Force
+    }
     throw
 } finally {
     if (Test-Path -LiteralPath $TxnRoot) { Remove-Item -LiteralPath $TxnRoot -Recurse -Force -ErrorAction SilentlyContinue }
