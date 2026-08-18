@@ -7,6 +7,13 @@
   const { useCallback, useEffect, useMemo, useState } = React;
   const { request, errText, fmt, loadPrefs, savePrefs, same, Card, Pill, Stat, Field, Empty, LoadingBlock, Dialog, ConfirmDialog, Tabs, SearchBox } = HX;
 
+  if (!document.getElementById("hx-agent-device-styles")) {
+    const style = document.createElement("style");
+    style.id = "hx-agent-device-styles";
+    style.textContent = ".hx-dialog{background:#061a17!important;opacity:1}.hx-dialog-head,.hx-dialog-body{background:#061a17!important}.hx-page select,.hx-dialog select{color-scheme:dark;background-color:#000!important;color:#fff!important}.hx-page select option,.hx-page select optgroup,.hx-dialog select option,.hx-dialog select optgroup{background:#000!important;color:#fff!important}.hx-agent-device{grid-column:2;align-self:start;border:1px solid var(--border,#29433f);border-radius:14px;padding:16px;background:#102b27;min-width:0}.hx-agent-device .hx-section-head{margin-bottom:12px}.hx-device-actions{display:grid;gap:7px;margin-bottom:12px}.hx-device-tabs{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--border,#29433f);border-radius:11px;padding:4px;margin-bottom:12px}.hx-device-tab{border:0;background:transparent;color:inherit;padding:10px;border-radius:8px;font:inherit;font-weight:700;cursor:pointer}.hx-device-tab.active{background:#1b3934;box-shadow:inset 0 0 0 1px var(--border,#35534e)}.hx-device-list{display:grid;gap:8px;max-height:260px;overflow:auto;padding-right:2px}.hx-device-row{display:grid;grid-template-columns:minmax(0,1fr) 76px;align-items:stretch;border:1px solid var(--border,#29433f);border-radius:11px;overflow:hidden;min-width:0}.hx-device-row.selected{border-color:var(--text,#f2d8bd)}.hx-device-select{display:grid;grid-template-columns:12px minmax(0,1fr) 24px;gap:10px;align-items:center;text-align:left;border:0;background:transparent;color:inherit;padding:12px;cursor:pointer;font:inherit;min-width:0;overflow:hidden}.hx-device-dot{width:10px;height:10px;border-radius:50%;background:var(--text,#f2d8bd)}.hx-device-copy,.hx-device-title,.hx-device-detail{display:block;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis}.hx-device-title{font-weight:700;white-space:nowrap}.hx-device-detail{font-size:.86em;opacity:.75;white-space:nowrap}.hx-device-check{width:22px;height:22px;border:1px solid var(--border,#35534e);border-radius:50%;display:grid;place-items:center}.hx-device-row.selected .hx-device-check{background:var(--text,#f2d8bd);color:#13231f}.hx-device-open{width:66px;align-self:center;justify-self:center;padding:7px 8px;border:1px solid var(--border,#35534e);border-radius:8px;background:#102b27;color:inherit;font:inherit;font-weight:700;cursor:pointer}.hx-device-open:hover{background:#1b3934}.hx-device-summary{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-top:1px solid var(--border,#29433f);margin-top:12px;padding-top:12px}.hx-device-summary strong{max-width:55%;text-align:right;overflow-wrap:anywhere}.hx-device-empty{padding:20px;text-align:center;opacity:.7}.hx-agent-device button:disabled{opacity:.5;cursor:not-allowed}@media(max-width:900px){.hx-agent-device{grid-column:1/-1}}";
+    document.head.appendChild(style);
+  }
+
   const DEFAULT_AGENT = { name: "", description: "", clone_mode: "blank", clone_from: "", workspace: "", model: "", provider: "", soul: "", no_skills: false };
   const DEFAULT_PROJECT = { name: "", profile: "default", slug: "", folders: "", primary: "", description: "", icon: "", color: "", board: "", agent: "", use: true };
   const DEFAULT_TASK = { type: "cron", name: "", prompt: "", schedule: "", profile: "default", priority: 50, deliver: "local" };
@@ -48,6 +55,11 @@
     const [projectModal, setProjectModal] = useState(false);
     const [taskModal, setTaskModal] = useState(false);
     const [agentDetail, setAgentDetail] = useState(null);
+    const [agentResources, setAgentResources] = useState([]);
+    const [availableResources, setAvailableResources] = useState([]);
+    const [agentResourcesLoading, setAgentResourcesLoading] = useState(false);
+    const [agentProviderData, setAgentProviderData] = useState(null);
+    const [agentDeviceTab, setAgentDeviceTab] = useState("wechat");
     const [projectDetail, setProjectDetail] = useState(null);
     const [taskDetail, setTaskDetail] = useState(null);
     const [agentOriginal, setAgentOriginal] = useState(null);
@@ -248,16 +260,134 @@
       if (busy) return;
       setBusy("agent-open");
       setError("");
+      setAgentResourcesLoading(true);
       try {
-        const data = await request("/agents/" + encodeURIComponent(name));
+        const results = await Promise.allSettled([
+          request("/agents/" + encodeURIComponent(name)),
+          request("/resources?refresh=true"),
+          request("/providers?profile=" + encodeURIComponent(name))
+        ]);
+        if (results[0].status !== "fulfilled") throw results[0].reason;
+        const data = results[0].value;
         setAgentDetail(data);
         setAgentOriginal(agentEditable(data));
+        setAgentProviderData(results[2].status === "fulfilled" ? results[2].value : null);
+        if (results[1].status === "fulfilled") {
+          const resources = (results[1].value && results[1].value.items) || [];
+          setAvailableResources(resources);
+          setAgentResources(resources.filter(function (row) { return row.assigned_agent === name; }));
+        } else {
+          setAvailableResources([]);
+          setAgentResources([]);
+          setError("Agent loaded, but bound resources could not be loaded: " + errText(results[1].reason));
+        }
         setTab("agents");
       } catch (e) {
         setError(errText(e));
       } finally {
+        setAgentResourcesLoading(false);
         setBusy("");
       }
+    }
+
+    function unbindAgentResource(resource) {
+      if (!agentDetail || !resource) return;
+      const kind = resource.kind === "wechat" ? "WeChat" : "browser";
+      askConfirm({
+        title: "Unbind " + kind + "?",
+        message: "This Agent will immediately lose access to the bound " + kind + ".",
+        detail: resource.title || resource.app || resource.id,
+        confirmLabel: "Unbind",
+        destructive: true
+      }, async function () {
+        const out = await doAction("resource-unbind:" + resource.id, function () {
+          return request("/resources/" + encodeURIComponent(resource.id) + "/bind", { method: "DELETE" });
+        }, kind + " unbound.", { refreshCore: false });
+        if (out.ok) {
+          setAgentResources(function (rows) { return rows.filter(function (row) { return row.id !== resource.id; }); });
+          setAvailableResources(function (rows) { return rows.map(function (row) { return row.id === resource.id ? Object.assign({}, row, { assigned_agent: null }) : row; }); });
+        }
+      });
+    }
+
+    async function bindAgentResource(kind, resourceId) {
+      if (!agentDetail || !resourceId) return;
+      const resource = availableResources.find(function (row) { return row.id === resourceId; });
+      if (!resource) return;
+      const out = await doAction("resource-bind:" + kind, function () {
+        return request("/resources/" + encodeURIComponent(resource.id) + "/bind", {
+          method: "POST",
+          body: JSON.stringify({ agent: agentDetail.name })
+        });
+      }, (kind === "wechat" ? "WeChat" : "Browser") + " linked.", { refreshCore: false });
+      if (!out.ok) return;
+      setAvailableResources(function (rows) { return rows.map(function (row) {
+        if (row.kind === kind && row.assigned_agent === agentDetail.name) return Object.assign({}, row, { assigned_agent: null });
+        if (row.id === resource.id) return Object.assign({}, row, { assigned_agent: agentDetail.name });
+        return row;
+      }); });
+      setAgentResources(function (rows) {
+        return rows.filter(function (row) { return row.kind !== kind; }).concat([Object.assign({}, resource, { assigned_agent: agentDetail.name })]);
+      });
+    }
+
+    async function refreshAgentDevices() {
+      if (!agentDetail || busy) return;
+      setAgentResourcesLoading(true);
+      try {
+        const result = await request("/resources?refresh=true");
+        const resources = (result && result.items) || [];
+        setAvailableResources(resources);
+        setAgentResources(resources.filter(function (row) { return row.assigned_agent === agentDetail.name; }));
+      } catch (e) { setError(errText(e)); }
+      finally { setAgentResourcesLoading(false); }
+    }
+
+    async function launchAgentBrowser() {
+      if (!agentDetail || busy || agentDirty) return;
+      const out = await doAction("resource-launch:browser", function () {
+        return request("/resources/browser/launch", {
+          method: "POST",
+          body: JSON.stringify({ agent: agentDetail.name, browser: "chrome", start_url: "https://www.google.com/" })
+        });
+      }, "Agent Browser launched and linked.", { refreshCore: false });
+      if (!out.ok) return;
+      await refreshAgentDevices();
+    }
+
+    async function focusAgentDevice(resource) {
+      if (!resource || busy) return;
+      const out = await doAction("resource-focus:" + resource.id, function () {
+        return request("/resources/" + encodeURIComponent(resource.id) + "/focus", { method: "POST" });
+      }, (resource.kind === "wechat" ? "WeChat" : "Browser") + " opened.", { refreshCore: false });
+      return out;
+    }
+
+    function AgentResourcePicker() {
+      const online = availableResources.filter(function (row) { return row.online; });
+      const rows = online.filter(function (row) { return row.kind === agentDeviceTab && (!row.assigned_agent || row.assigned_agent === agentDetail.name); });
+      const current = agentResources.find(function (row) { return row.kind === agentDeviceTab; });
+      const wechatCount = online.filter(function (row) { return row.kind === "wechat"; }).length;
+      return h("section", { className: "hx-agent-device" },
+        h("div", { className: "hx-section-head" }, h("div", null, h("h3", null, "Computer use"), h("div", { className: "hx-muted" }, "Choose the local window this Agent may operate.")), h("button", { className: "hx-button secondary", type: "button", disabled: Boolean(busy) || agentResourcesLoading, onClick: refreshAgentDevices }, agentResourcesLoading ? "Scanning…" : "Rescan")),
+        h("div", { className: "hx-device-tabs", role: "tablist" },
+          h("button", { type: "button", className: "hx-device-tab" + (agentDeviceTab === "browser" ? " active" : ""), onClick: function () { setAgentDeviceTab("browser"); } }, "Browser"),
+          h("button", { type: "button", className: "hx-device-tab" + (agentDeviceTab === "wechat" ? " active" : ""), onClick: function () { setAgentDeviceTab("wechat"); } }, "Local WeChat · " + wechatCount)
+        ),
+        agentDeviceTab === "browser" ? h("div", { className: "hx-device-actions" },
+          h("button", { className: "hx-button secondary", type: "button", disabled: Boolean(busy) || agentResourcesLoading || agentDirty, onClick: launchAgentBrowser }, busyIs("resource-launch:browser") ? "Launching…" : "Launch / reconnect Agent Browser"),
+          h("span", { className: "hx-muted" }, "Ordinary Chrome windows need a dedicated controllable copy.")) : null,
+        agentResourcesLoading ? h(LoadingBlock, null, "Loading resources…") : h("div", { className: "hx-device-list" }, rows.length ? rows.map(function (row) {
+          const selected = Boolean(current && current.id === row.id);
+          const title = row.title || row.app || (row.kind === "wechat" ? "WeChat" : "Browser");
+          const detail = row.kind === "wechat" ? "PID " + row.pid + " · local desktop window" : (row.app || "browser") + " · " + (row.profile || "Default") + (row.debug_port ? " · controllable · CDP " + row.debug_port : " · visible only · use Launch / reconnect above");
+          return h("div", { className: "hx-device-row" + (selected ? " selected" : ""), key: row.id },
+            h("button", { className: "hx-device-select", type: "button", disabled: Boolean(busy) || agentDirty || (row.kind === "browser" && !row.attachable), onClick: function () { bindAgentResource(row.kind, row.id); } }, h("span", { className: "hx-device-dot" }), h("span", { className: "hx-device-copy" }, h("span", { className: "hx-device-title" }, title), h("span", { className: "hx-device-detail" }, detail)), h("span", { className: "hx-device-check" }, selected ? "✓" : "")),
+            h("button", { className: "hx-device-open", type: "button", disabled: busyIs("resource-focus:" + row.id), onClick: function () { focusAgentDevice(row); }, "aria-label": "Open " + title }, busyIs("resource-focus:" + row.id) ? "Opening…" : "Open")
+          );
+        }) : h("div", { className: "hx-device-empty" }, "No available " + (agentDeviceTab === "wechat" ? "WeChat" : "browser") + " windows.")),
+        h("div", { className: "hx-device-summary" }, h("span", null, "Assigned to this Agent"), h("strong", null, current ? (current.title || current.app || (agentDeviceTab === "wechat" ? "WeChat" : "Browser")) : "None"))
+      );
     }
 
     async function saveAgent(e) {
@@ -575,15 +705,21 @@
       if (!agentDetail) return null;
       const a = agentDetail;
       const running = String(a.gateway || "").toLowerCase().startsWith("running");
-      return h(Dialog, { open: true, title: "Agent · " + (a.display_name || a.name), subtitle: agentDirty ? "Unsaved changes" : "Native Hermes Profile", locked: Boolean(busy), onRequestClose: function () { guardedClose(agentDirty, function () { setAgentDetail(null); setAgentOriginal(null); }); } },
+      const workspaceOptions = Array.from(new Set([a.workspace || ".", "."].concat(projects.flatMap(function (p) { return [p.primary_path, p.slug].filter(Boolean); }))));
+      const providerItems = (agentProviderData && agentProviderData.items) || [];
+      const providerOptions = Array.from(new Set([a.provider].concat(providerItems.map(function (p) { return p.id; })).filter(Boolean)));
+      const activeProvider = providerItems.find(function (p) { return p.id === a.provider; });
+      const modelOptions = Array.from(new Set([a.model].concat(activeProvider && Array.isArray(activeProvider.models) ? activeProvider.models : []).filter(Boolean)));
+      return h(Dialog, { open: true, title: "Agent · " + (a.display_name || a.name), subtitle: agentDirty ? "Unsaved changes" : "Native Hermes Profile", locked: Boolean(busy), onRequestClose: function () { guardedClose(agentDirty, function () { setAgentDetail(null); setAgentOriginal(null); setAgentResources([]); }); } },
         h("form", { className: "hx-form", onSubmit: saveAgent },
           Field("Profile name", h("input", { value: a.edit_name == null ? a.name : a.edit_name, disabled: a.name === "default", onChange: function (e) { setAgentDetail(Object.assign({}, a, { edit_name: e.target.value })); } })),
           Field("Description / role", h("textarea", { rows: 3, value: a.description || "", onChange: function (e) { setAgentDetail(Object.assign({}, a, { description: e.target.value })); } })),
-          Field("Workspace", h("input", { value: a.workspace || "", onChange: function (e) { setAgentDetail(Object.assign({}, a, { workspace: e.target.value })); } })),
-          Field("Provider", h("input", { value: a.provider || "", onChange: function (e) { setAgentDetail(Object.assign({}, a, { provider: e.target.value })); } })),
-          Field("Model", h("input", { value: a.model || "", onChange: function (e) { setAgentDetail(Object.assign({}, a, { model: e.target.value })); } })),
+          Field("Workspace", h("select", { value: a.workspace || ".", onChange: function (e) { setAgentDetail(Object.assign({}, a, { workspace: e.target.value })); } }, workspaceOptions.map(function (value) { return h("option", { key: value, value: value }, value === "." ? "Default workspace (.)" : value); }))),
+          Field("Provider", h("select", { value: a.provider || "", onChange: function (e) { const nextProvider = providerItems.find(function (p) { return p.id === e.target.value; }); const models = nextProvider && Array.isArray(nextProvider.models) ? nextProvider.models : []; const nextModel = nextProvider && nextProvider.default_model ? nextProvider.default_model : (models[0] || ""); setAgentDetail(Object.assign({}, a, { provider: e.target.value, model: nextModel })); } }, providerOptions.length ? providerOptions.map(function (value) { const item = providerItems.find(function (p) { return p.id === value; }); return h("option", { key: value, value: value }, item && (item.custom_name || item.name) ? (item.custom_name || item.name) : value); }) : h("option", { value: a.provider || "" }, a.provider || "No configured providers"))),
+          Field("Model", h("select", { value: a.model || "", onChange: function (e) { setAgentDetail(Object.assign({}, a, { model: e.target.value })); } }, modelOptions.length ? modelOptions.map(function (value) { return h("option", { key: value, value: value }, value); }) : h("option", { value: "" }, "No saved models"))),
           Field("Gateway", h("input", { value: a.gateway || "unknown", readOnly: true })),
           Field("SOUL.md", h("textarea", { rows: 12, value: a.soul || "", onChange: function (e) { setAgentDetail(Object.assign({}, a, { soul: e.target.value })); } })),
+          h(AgentResourcePicker),
           h(DirtyNote, { dirty: agentDirty }),
           h("div", { className: "hx-actions hx-span-2" },
             h("button", { className: "hx-button", type: "submit", disabled: busyIs("agent-save") || !agentDirty }, busyIs("agent-save") ? "Saving…" : "Save"),
@@ -655,10 +791,15 @@
       return h(Dialog, { open: taskModal, title: "Create Task", subtitle: taskCreateDirty ? "Unsaved new Task" : "Native Cron or Kanban", locked: busyIs("task-create"), onRequestClose: function () { guardedClose(taskCreateDirty, function () { setTaskModal(false); setTaskForm(Object.assign({}, DEFAULT_TASK)); }); } }, h("form", { className: "hx-form", onSubmit: createTask }, Field("Type", h("select", { value: taskForm.type, onChange: function (e) { setTaskForm(Object.assign({}, taskForm, { type: e.target.value })); } }, h("option", { value: "cron" }, "Cron"), h("option", { value: "kanban" }, "Kanban"))), Field("Name", h("input", { required: true, value: taskForm.name, onChange: function (e) { setTaskForm(Object.assign({}, taskForm, { name: e.target.value })); } })), Field("Agent/Profile", h("select", { value: taskForm.profile, onChange: function (e) { setTaskForm(Object.assign({}, taskForm, { profile: e.target.value })); } }, agentNames.map(function (name) { return h("option", { key: name, value: name }, name); }))), taskForm.type === "cron" ? Field("Deliver", h("input", { value: taskForm.deliver, onChange: function (e) { setTaskForm(Object.assign({}, taskForm, { deliver: e.target.value })); } })) : Field("Priority", h("input", { type: "number", min: 0, max: 100, value: taskForm.priority, onChange: function (e) { setTaskForm(Object.assign({}, taskForm, { priority: Number(e.target.value) })); } })), Field(taskForm.type === "cron" ? "Prompt" : "Details", h("textarea", { rows: 6, required: taskForm.type === "cron", value: taskForm.prompt, onChange: function (e) { setTaskForm(Object.assign({}, taskForm, { prompt: e.target.value })); } })), taskForm.type === "cron" ? Field("Schedule", h("input", { required: true, value: taskForm.schedule, placeholder: "every 10m or cron expression", onChange: function (e) { setTaskForm(Object.assign({}, taskForm, { schedule: e.target.value })); } })) : null, h("div", { className: "hx-actions hx-span-2" }, h("button", { className: "hx-button", type: "submit", disabled: busyIs("task-create") }, busyIs("task-create") ? "Creating…" : "Create Task"), h("button", { className: "hx-button secondary", type: "button", disabled: busyIs("task-create"), onClick: function () { guardedClose(taskCreateDirty, function () { setTaskModal(false); setTaskForm(Object.assign({}, DEFAULT_TASK)); }); } }, "Cancel"))));
     }
 
+    // These render helpers are declared inside ManagementApp, so using them as
+    // React component types would create a new type on every keystroke. React
+    // would then unmount/remount the dialog and its initial-focus effect would
+    // move focus to the first enabled control (normally Close). Invoke the
+    // hook-free helpers directly so the stable Dialog/input elements reconcile.
     return h("div", { className: "hx-page" },
-      h(Header),
-      tab === "overview" ? h(Overview) : tab === "agents" ? h(Agents) : tab === "projects" ? h(Projects) : tab === "tasks" ? h(Tasks) : h(WeChat),
-      h(AgentDetail), h(ProjectDetail), h(TaskDetail), h(AgentModal), h(ProjectModal), h(TaskModal),
+      Header(),
+      tab === "overview" ? Overview() : tab === "agents" ? Agents() : tab === "projects" ? Projects() : tab === "tasks" ? Tasks() : WeChat(),
+      AgentDetail(), ProjectDetail(), TaskDetail(), AgentModal(), ProjectModal(), TaskModal(),
       h(ConfirmDialog, { spec: confirmSpec, onCancel: function () { if (!confirmSpec || !confirmSpec.locked) setConfirmSpec(null); }, onConfirm: confirmNow })
     );
   }

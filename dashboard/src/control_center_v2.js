@@ -45,10 +45,25 @@
     const [notice, setNotice] = useState("");
     const [labels, setLabels] = useState(readResourceLabels);
     const [launchAgent, setLaunchAgent] = useState("");
+    function timedRequest(path, timeoutMs) {
+      return Promise.race([
+        request(path),
+        new Promise(function (_, reject) {
+          window.setTimeout(function () { reject(new Error("Desktop resource scan timed out")); }, timeoutMs);
+        })
+      ]);
+    }
     const load = useCallback(async function (refresh) {
       setLoading(true); setError("");
-      try { setData(await request("/resources?refresh=" + (refresh ? "true" : "false"))); }
-      catch (e) { setError(errText(e)); }
+      try { setData(await timedRequest("/resources?refresh=" + (refresh ? "true" : "false"), refresh ? 12000 : 5000)); }
+      catch (e) {
+        if (refresh) {
+          try {
+            setData(await timedRequest("/resources?refresh=false", 5000));
+            setError("Live desktop scan timed out; showing the last known resource state. Click Refresh to retry.");
+          } catch (_) { setError(errText(e)); }
+        } else setError(errText(e));
+      }
       finally { setLoading(false); }
     }, []);
     useEffect(function () { load(true); }, [load]);

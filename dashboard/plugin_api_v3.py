@@ -8,12 +8,16 @@ from pydantic import ConfigDict, BaseModel, Field
 
 import plugin_api_v2 as base
 import extra_api as extra
+import browser_api
 
 # Use Hermes' native dashboard logger so all Control Center request diagnostics
 # and tracebacks appear in the built-in Logs -> AGENT.LOG view.
 logger = logging.getLogger("hermes_cli.web_server")
 
 router = APIRouter()
+# Browser routes must be registered before the base router because the base
+# compatibility API ends with a catch-all plugin route.
+router.include_router(browser_api.router)
 router.include_router(base.router)
 ManagementCenter = base.ManagementCenter
 TaskCenter = base.TaskCenter
@@ -167,6 +171,18 @@ def resource_unbind_fixed(resource_id: str) -> dict[str, Any]:
         return result
     except Exception:
         logger.exception("[ControlCenter] request failed: DELETE /resource/bind resource_id=%s", resource_id)
+        raise
+
+
+@router.post("/resource/focus")
+def resource_focus_fixed(resource_id: str) -> dict[str, Any]:
+    logger.info("[ControlCenter] request entered: POST /resource/focus resource_id=%s", resource_id)
+    try:
+        result = extra.focus_resource(resource_id)
+        logger.info("[ControlCenter] request completed: POST /resource/focus resource_id=%s", resource_id)
+        return result
+    except Exception:
+        logger.exception("[ControlCenter] request failed: POST /resource/focus resource_id=%s", resource_id)
         raise
 
 

@@ -83,6 +83,20 @@ def _bind_launched_browser(agent: str, launch: dict[str, Any]) -> tuple[dict[str
     return resource, binding
 
 
+def _restart_gateway(agent: str, resource: dict[str, Any]) -> dict[str, Any]:
+    """Reload tool availability after a browser/CDP binding changes."""
+    port = int(resource.get("debug_port") or 0)
+    if port <= 0:
+        raise RuntimeError("Bound browser has no usable CDP port")
+    management = ManagementCenter()
+    cdp_url = f"http://127.0.0.1:{port}"
+    management._set_config(agent, "browser.cdp_url", cdp_url)
+    result = management.agent_action(agent, "gateway_restart")
+    if not result.get("ok"):
+        raise RuntimeError(str(result.get("warning") or "Gateway restart could not be verified"))
+    return dict(result, cdp_url=cdp_url)
+
+
 @router.post("/resources/browser/launch")
 def launch_agent_browser(body: ManagedBrowserBody) -> dict[str, Any]:
     agent = body.agent.strip().lower()
@@ -95,11 +109,13 @@ def launch_agent_browser(body: ManagedBrowserBody) -> dict[str, Any]:
             start_url=body.start_url,
         )
         resource, binding = _bind_launched_browser(agent, launch)
+        gateway_restart = _restart_gateway(agent, resource)
         return {
             "ok": True,
             "launch": launch,
             "resource": dict(resource, assigned_agent=agent),
             "binding": binding,
+            "gateway_restart": gateway_restart,
             "diagnostic_log": browser_diagnostic_log_path(),
         }
     except ValueError as exc:
@@ -124,12 +140,14 @@ def import_existing_browser(resource_id: str, body: ImportBrowserBody) -> dict[s
         )
         launch = dict(result.get("launch") or {})
         managed_resource, binding = _bind_launched_browser(agent, launch)
+        gateway_restart = _restart_gateway(agent, managed_resource)
         return {
             "ok": True,
             "import": result,
             "launch": launch,
             "resource": dict(managed_resource, assigned_agent=agent),
             "binding": binding,
+            "gateway_restart": gateway_restart,
             "diagnostic_log": browser_diagnostic_log_path(),
         }
     except ValueError as exc:

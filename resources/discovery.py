@@ -215,31 +215,39 @@ def discover_resources() -> list[dict[str, Any]]:
             attach_reason = probe_reason
             attach_error = "" if attachable else "Remote-debugging port is present but the CDP endpoint is unreachable"
 
-        resource_id = _stable_id(
-            "browser",
-            exe_path or name,
-            user_data_dir=user_data,
-            profile=profile_name,
-        )
-        if resource_id in seen:
-            continue
-        seen.add(resource_id)
-        win = process_windows[0]
-        resources.append({
-            "id": resource_id,
-            "kind": "browser",
-            "app": browser,
-            "pid": pid,
-            "hwnd": win["hwnd"],
-            "title": win["title"],
-            "exe": exe_path or name,
-            "profile": profile_name,
-            "user_data_dir": user_data,
-            "debug_port": port,
-            "attachable": attachable,
-            "attach_reason": attach_reason,
-            "attach_error": attach_error,
-            "status": "ready" if attachable else "not_attachable",
-            "online": True,
-        })
+        # A CDP-enabled browser is controlled as one profile-wide instance. An
+        # ordinary browser, however, can have several independent top-level
+        # windows. Preserve those windows individually so a meaningful window
+        # such as an already-open OMP session is not hidden by process-level
+        # de-duplication or by an unrelated first window.
+        browser_windows = process_windows[:1] if attachable else process_windows
+        for win in browser_windows:
+            identity_instance = "" if attachable else str(win["hwnd"])
+            resource_id = _stable_id(
+                "browser",
+                exe_path or name,
+                user_data_dir=user_data,
+                profile=profile_name,
+                instance=identity_instance,
+            )
+            if resource_id in seen:
+                continue
+            seen.add(resource_id)
+            resources.append({
+                "id": resource_id,
+                "kind": "browser",
+                "app": browser,
+                "pid": pid,
+                "hwnd": win["hwnd"],
+                "title": win["title"],
+                "exe": exe_path or name,
+                "profile": profile_name,
+                "user_data_dir": user_data,
+                "debug_port": port,
+                "attachable": attachable,
+                "attach_reason": attach_reason,
+                "attach_error": attach_error,
+                "status": "ready" if attachable else "not_attachable",
+                "online": True,
+            })
     return sorted(resources, key=lambda item: (item["kind"], item["app"], item["title"].lower(), item["pid"]))

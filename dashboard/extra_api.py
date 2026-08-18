@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import ctypes
 import json
 import socket
 import sys
@@ -232,7 +233,20 @@ def bind_resource(resource_id: str, body: BindingBody) -> dict[str, Any]:
         agent = body.agent.strip().lower()
         if agent not in known:
             raise ValueError("unknown agent")
-        return ResourceBindings().bind(resource_id, agent)
+        result = ResourceBindings().bind(resource_id, agent)
+        resource = dict(result.get("resource") or {})
+        if resource.get("kind") == "browser":
+            port = int(resource.get("debug_port") or 0)
+            if port <= 0:
+                raise RuntimeError("Bound browser has no usable CDP port")
+            management = ManagementCenter()
+            cdp_url = f"http://127.0.0.1:{port}"
+            management._set_config(agent, "browser.cdp_url", cdp_url)
+            restart = management.agent_action(agent, "gateway_restart")
+            if not restart.get("ok"):
+                raise RuntimeError(str(restart.get("warning") or "Gateway restart could not be verified"))
+            result["gateway_restart"] = dict(restart, cdp_url=cdp_url)
+        return result
     except Exception as exc:
         raise _bad(exc) from exc
 
@@ -241,6 +255,57 @@ def bind_resource(resource_id: str, body: BindingBody) -> dict[str, Any]:
 def unbind_resource(resource_id: str) -> dict[str, Any]:
     try:
         return {"ok": True, "unbound": ResourceBindings().unbind(resource_id)}
+    except Exception as exc:
+        raise _bad(exc) from exc
+
+
+def _activate_window(hwnd: int) -> bool:
+    """Bring an exact top-level window forward across process input queues."""
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    root = int(user32.GetAncestor(hwnd, 2) or hwnd)  # GA_ROOT
+    if not user32.IsWindow(root):
+        return False
+    foreground = int(user32.GetForegroundWindow() or 0)
+    current_thread = int(kernel32.GetCurrentThreadId())
+    target_thread = int(user32.GetWindowThreadProcessId(root, None) or 0)
+    foreground_thread = int(user32.GetWindowThreadProcessId(foreground, None) or 0) if foreground else 0
+    attached: list[tuple[int, int]] = []
+    try:
+        for left, right in ((current_thread, foreground_thread), (current_thread, target_thread)):
+            if left and right and left != right and user32.AttachThreadInput(left, right, True):
+                attached.append((left, right))
+        if user32.IsIconic(root):
+            user32.ShowWindow(root, 9)  # SW_RESTORE
+        else:
+            user32.ShowWindow(root, 5)  # SW_SHOW
+        user32.SetWindowPos(root, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)
+        user32.BringWindowToTop(root)
+        user32.SetForegroundWindow(root)
+        user32.SetActiveWindow(root)
+        user32.SetFocus(root)
+    finally:
+        for left, right in reversed(attached):
+            user32.AttachThreadInput(left, right, False)
+    return int(user32.GetForegroundWindow() or 0) == root
+
+
+@router.post("/resources/{resource_id}/focus")
+def focus_resource(resource_id: str) -> dict[str, Any]:
+    try:
+        if sys.platform != "win32":
+            raise ValueError("window focus is supported on Windows only")
+        resource = ResourceRegistry().get(resource_id, refresh=True)
+        if not resource or not resource.get("online"):
+            raise ValueError("resource is not online")
+        hwnd = int(resource.get("hwnd") or 0)
+        user32 = ctypes.windll.user32
+        if not hwnd or not user32.IsWindow(hwnd):
+            raise ValueError("resource window is no longer available")
+        focused = _activate_window(hwnd)
+        if not focused:
+            raise RuntimeError("Windows refused to move the selected window to the foreground")
+        return {"ok": True, "resource_id": resource_id, "hwnd": hwnd, "focused": focused}
     except Exception as exc:
         raise _bad(exc) from exc
 

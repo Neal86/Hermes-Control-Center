@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import hashlib
 import os
 import threading
@@ -43,10 +44,14 @@ class BoundWeChatDesktop(_RuntimeWeChat):
         digest = hashlib.sha256(self.resource_id.encode("utf-8")).hexdigest()[:16]
         data_dir = hermes_home / "plugin-data" / "hermes-extensions" / "wechat" / "instances" / digest
         super().__init__(data_dir=data_dir, lock_timeout=lock_timeout)
+        # BoundWeChatDesktop owns a per-resource transaction implementation.
+        # Keep its timeout field explicit instead of relying on the base
+        # runtime's differently named public attribute.
+        self._ui_lock_timeout = self.lock_timeout
         self._ui_lock_path = self.data_dir / "desktop-ui.lock"
 
     def _main_window(self):
-        Desktop, _, _ = self._deps()
+        Desktop = self._deps()
         try:
             win = Desktop(backend="uia").window(handle=self.window_handle)
             if not win.exists(timeout=0.5) or not win.is_visible():
@@ -73,6 +78,12 @@ class BoundWeChatDesktop(_RuntimeWeChat):
             finally:
                 depths[key] -= 1
             return
+        previous_foreground = 0
+        if os.name == "nt":
+            try:
+                previous_foreground = int(ctypes.windll.user32.GetForegroundWindow() or 0)
+            except Exception:
+                previous_foreground = 0
         lock = _thread_lock(key)
         acquired = lock.acquire(timeout=self._ui_lock_timeout)
         if not acquired:
@@ -85,6 +96,18 @@ class BoundWeChatDesktop(_RuntimeWeChat):
                 yield
             finally:
                 depths[key] = 0
+                if previous_foreground and os.name == "nt":
+                    try:
+                        user32 = ctypes.windll.user32
+                        current = int(user32.GetForegroundWindow() or 0)
+                        if (
+                            current == self.window_handle
+                            and previous_foreground != self.window_handle
+                            and user32.IsWindow(previous_foreground)
+                        ):
+                            self._restore_foreground(previous_foreground)
+                    except Exception:
+                        pass
                 process_lock.release()
         finally:
             lock.release()

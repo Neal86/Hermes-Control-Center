@@ -56,6 +56,11 @@
       return addQuery("/resource/bind" + query, "resource_id", decodeURIComponent(match[1]));
     }
 
+    match = pathname.match(/^\/resources\/(.+)\/focus$/);
+    if (match && method === "POST") {
+      return addQuery("/resource/focus" + query, "resource_id", decodeURIComponent(match[1]));
+    }
+
     return path;
   }
 
