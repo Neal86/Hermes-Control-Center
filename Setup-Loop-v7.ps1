@@ -217,10 +217,10 @@ while ($true) {
         "1" {
             Write-Host "`nRunning: Install / update everything" -ForegroundColor Cyan
             $code = Run-PowerShellFile $CoreSetup @("-Action","UpdateHermes","-NoPrompt","-NoDashboard") "hermes-update"
-            if ($code -eq 0) { $code = Install-ControlCenter }
+            if ($code -eq 0) { $code = Run-PowerShellFile $CoreSetup @("-Action","UpdatePlugin","-NoPrompt","-NoDashboard") "control-center-update" }
         }
         "2" { Write-Host "`nRunning: Update Hermes" -ForegroundColor Cyan; $code = Run-PowerShellFile $CoreSetup @("-Action","UpdateHermes","-NoPrompt","-NoDashboard") "hermes-update" }
-        "3" { Write-Host "`nRunning: Update Control Center" -ForegroundColor Cyan; $code = Install-ControlCenter }
+        "3" { Write-Host "`nRunning: Update Control Center" -ForegroundColor Cyan; $code = Run-PowerShellFile $CoreSetup @("-Action","UpdatePlugin","-NoPrompt","-NoDashboard") "control-center-update" }
         "4" { Write-Host "`nRunning: Repair Control Center" -ForegroundColor Cyan; $code = Install-ControlCenter -Repair }
         "5" { Write-Host "`nRunning: Open Hermes Dashboard" -ForegroundColor Cyan; $code = Run-PowerShellFile $Dashboard @() "dashboard-launch-wrapper" }
         default { Write-Host "`nInvalid selection. Please choose 1-6." -ForegroundColor Yellow; [void](Read-Host "Press Enter to return to menu"); continue }
