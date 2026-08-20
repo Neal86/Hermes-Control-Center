@@ -10,15 +10,18 @@ if not "%ERRORLEVEL%"=="0" (
   pause
   exit /b %ERRORLEVEL%
 )
-set "HCC_LIVE_LOG_TAIL=1"
-set "LIVE_STOP=%TEMP%\hermes-control-center-live-%RANDOM%%RANDOM%.stop"
-if exist "%LIVE_STOP%" del /q "%LIVE_STOP%" >nul 2>&1
-start "" /b powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Live-Log-Tail.ps1" -StopFile "%LIVE_STOP%"
+
+rem IMPORTANT: do not start Live-Log-Tail.ps1 with `start /b` here.
+rem A background PowerShell sharing this console also inherits the console input
+rem handle and can race with Read-Host in Setup-Loop-v7.ps1. That caused the
+rem menu to receive an empty choice immediately after Dashboard launch and then
+rem treat the user's `5` as input for the following pause prompt.
+rem Setup-Loop already prints each operation log itself when HCC_LIVE_LOG_TAIL
+rem is not set, so keep the interactive console single-owner and deterministic.
+set "HCC_LIVE_LOG_TAIL="
+
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Setup-Loop-v7.ps1"
 set "EXITCODE=%ERRORLEVEL%"
-type nul > "%LIVE_STOP%"
-timeout /t 1 /nobreak >nul
-del /q "%LIVE_STOP%" >nul 2>&1
 echo.
 if not "%EXITCODE%"=="0" (
   echo Hermes Control Center Setup ended with exit code %EXITCODE%.
