@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import contextlib
-import ctypes
 import hashlib
-import json
 import os
 import sys
 import threading
 import time
-from collections import defaultdict
 from pathlib import Path
 from typing import Iterator
 
@@ -16,7 +13,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from .adapter import WeChatDesktop as _BaseWeChatDesktop, WeChatUnavailable  # noqa: E402
+from .strict_adapter import WeChatDesktop as _BaseWeChatDesktop, WeChatUnavailable  # noqa: E402
 
 
 _UI_THREAD_LOCK = threading.RLock()
@@ -24,7 +21,7 @@ _LOCK_LOCAL = threading.local()
 
 
 class _CrossProcessFileLock:
-    """Small cross-process lock used to serialize WeChat UI side effects."""
+    """Small cross-process lock used to serialize WeChat UI access."""
 
     def __init__(self, path: Path, timeout: float = 15.0) -> None:
         self.path = path
@@ -105,37 +102,17 @@ def _resource_data_dir(resource_id: str | None) -> Path:
 
 
 class WeChatDesktop(_BaseWeChatDesktop):
-    """Hardened runtime facade with cross-instance/process UI transactions."""
+    """Strict background runtime facade with serialized UIA access.
+
+    This runtime deliberately contains no SetForegroundWindow, BringWindowToTop,
+    ShowWindow, SetWindowPos, AttachThreadInput, click, or foreground restoration
+    path. Operations that cannot complete through background UIA fail closed.
+    """
 
     def __init__(self, data_dir: Path | None = None, *, lock_timeout: float = 15.0) -> None:
         super().__init__(data_dir=data_dir)
         self.lock_timeout = max(0.1, float(lock_timeout))
         self._lock_path = self.data_dir / "ui.lock"
-
-    @staticmethod
-    def _restore_foreground(hwnd: int) -> None:
-        """Restore a valid foreground HWND across Windows input-thread boundaries."""
-        if os.name != "nt" or not hwnd:
-            return
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-        current = int(user32.GetForegroundWindow() or 0)
-        if not current or current == hwnd or not user32.IsWindow(hwnd):
-            return
-        current_tid = int(user32.GetWindowThreadProcessId(current, None) or 0)
-        target_tid = int(user32.GetWindowThreadProcessId(hwnd, None) or 0)
-        caller_tid = int(kernel32.GetCurrentThreadId() or 0)
-        attached: list[tuple[int, int]] = []
-        try:
-            for left, right in ((caller_tid, current_tid), (caller_tid, target_tid)):
-                if left and right and left != right and user32.AttachThreadInput(left, right, True):
-                    attached.append((left, right))
-            user32.ShowWindow(hwnd, 4)  # SW_SHOWNOACTIVATE
-            user32.BringWindowToTop(hwnd)
-            user32.SetForegroundWindow(hwnd)
-        finally:
-            for left, right in reversed(attached):
-                user32.AttachThreadInput(left, right, False)
 
     @contextlib.contextmanager
     def _ui_transaction(self) -> Iterator[None]:
@@ -147,12 +124,6 @@ class WeChatDesktop(_BaseWeChatDesktop):
             finally:
                 _LOCK_LOCAL.depth -= 1
             return
-        previous_foreground = 0
-        if os.name == "nt":
-            try:
-                previous_foreground = int(ctypes.windll.user32.GetForegroundWindow() or 0)
-            except Exception:
-                previous_foreground = 0
         with _UI_THREAD_LOCK:
             with _CrossProcessFileLock(self._lock_path, self.lock_timeout):
                 _LOCK_LOCAL.depth = 1
@@ -160,21 +131,12 @@ class WeChatDesktop(_BaseWeChatDesktop):
                     yield
                 finally:
                     _LOCK_LOCAL.depth = 0
-                    if previous_foreground and os.name == "nt":
-                        try:
-                            user32 = ctypes.windll.user32
-                            target = int(self._main_window().handle)
-                            current = int(user32.GetForegroundWindow() or 0)
-                            if current == target and previous_foreground != target and user32.IsWindow(previous_foreground):
-                                self._restore_foreground(previous_foreground)
-                        except Exception:
-                            pass
 
     def status(self) -> dict:
         with self._ui_transaction():
             return super().status()
 
-    def list_chats(self, limit: int = 200) -> list[dict]:
+    def list_chats(self, limit: int = 200):
         with self._ui_transaction():
             return super().list_chats(limit=limit)
 
