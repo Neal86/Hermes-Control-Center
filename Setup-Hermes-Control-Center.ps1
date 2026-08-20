@@ -111,7 +111,9 @@ function Get-ControlCenterBundledVersion {
 }
 
 function Get-ControlCenterLatestVersion {
-    $text = Get-RemoteText $ControlCenterVersionSource
+    $sha = Get-ControlCenterMainSha
+    $source = if ($sha) { "https://raw.githubusercontent.com/Neal86/Hermes-Control-Center/$sha/plugin.yaml" } else { $ControlCenterVersionSource }
+    $text = Get-RemoteText $source
     if ($text -and $text -match '(?m)^version:\s*["'']?([^\s"'']+)["'']?\s*$') { return $Matches[1].Trim() }
     return Get-ControlCenterBundledVersion
 }

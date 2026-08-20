@@ -17,6 +17,7 @@ New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 $HermesVersionSource = "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/pyproject.toml"
 $ControlCenterVersionSource = "https://raw.githubusercontent.com/Neal86/Hermes-Control-Center/main/plugin.yaml"
+$ControlCenterBranchApi = "https://api.github.com/repos/Neal86/Hermes-Control-Center/branches/main"
 
 function Read-VersionFile([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
@@ -36,6 +37,17 @@ function Get-RemoteVersion([string]$Uri, [string]$Pattern) {
         if ($text -match $Pattern) { return $Matches[1].Trim() }
     } catch {}
     return $null
+}
+function Get-ControlCenterRemoteVersion {
+    try {
+        $headers = @{ "Cache-Control" = "no-cache, no-store, max-age=0"; "Pragma" = "no-cache"; "User-Agent" = "Hermes-Control-Center-Setup" }
+        $branch = (Invoke-WebRequest -UseBasicParsing -Uri ($ControlCenterBranchApi + "?hcc_cb=" + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) -Headers $headers -TimeoutSec 8).Content | ConvertFrom-Json
+        $sha = [string]$branch.commit.sha
+        if ($sha -match '^[0-9a-f]{40}$') {
+            return Get-RemoteVersion ("https://raw.githubusercontent.com/Neal86/Hermes-Control-Center/" + $sha + "/plugin.yaml") '(?m)^version:\s*["'']?([^\s"'']+)["'']?\s*$'
+        }
+    } catch {}
+    return Get-RemoteVersion $ControlCenterVersionSource '(?m)^version:\s*["'']?([^\s"'']+)["'']?\s*$'
 }
 function Get-HermesInstalledVersion {
     $cmd = Get-Command hermes -ErrorAction SilentlyContinue
@@ -193,7 +205,7 @@ function Show-Menu {
     $hInstalled = Get-HermesInstalledVersion
     $hLatest = Get-RemoteVersion $HermesVersionSource '(?m)^version\s*=\s*["'']([^"'']+)["'']\s*$'
     $cInstalled = Read-VersionFile (Join-Path $HermesHome "plugins\hermes-extensions\plugin.yaml")
-    $cLatest = Get-RemoteVersion $ControlCenterVersionSource '(?m)^version:\s*["'']?([^\s"'']+)["'']?\s*$'
+    $cLatest = Get-ControlCenterRemoteVersion
     if (-not $cLatest) { $cLatest = Read-VersionFile (Join-Path $Root "plugin.yaml") }
     Write-Host "Hermes Control Center Setup" -ForegroundColor Green
     Write-Host "Hermes home: $HermesHome"
