@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import logging
+import re
+from pathlib import Path
 from typing import Any, Literal
+from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import ConfigDict, BaseModel, Field
@@ -10,13 +13,9 @@ import plugin_api_v2 as base
 import extra_api as extra
 import browser_api
 
-# Use Hermes' native dashboard logger so all Control Center request diagnostics
-# and tracebacks appear in the built-in Logs -> AGENT.LOG view.
 logger = logging.getLogger("hermes_cli.web_server")
 
 router = APIRouter()
-# Browser routes must be registered before the base router because the base
-# compatibility API ends with a catch-all plugin route.
 router.include_router(browser_api.router)
 router.include_router(base.router)
 ManagementCenter = base.ManagementCenter
@@ -58,6 +57,49 @@ def _bad_request(exc: Exception) -> HTTPException:
 
 def _server_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=str(exc))
+
+
+def _read_control_center_version() -> str:
+    manifest = Path(__file__).resolve().parents[1] / "plugin.yaml"
+    try:
+        text = manifest.read_text("utf-8")
+        match = re.search(r'(?m)^version:\s*["\']?([^\s"\']+)', text)
+        return match.group(1).strip() if match else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _latest_control_center_version() -> str | None:
+    url = "https://raw.githubusercontent.com/Neal86/Hermes-Control-Center/main/plugin.yaml"
+    try:
+        req = UrlRequest(url, headers={"Cache-Control": "no-cache", "User-Agent": "Hermes-Control-Center"})
+        with urlopen(req, timeout=2.5) as response:
+            text = response.read().decode("utf-8", "replace")
+        match = re.search(r'(?m)^version:\s*["\']?([^\s"\']+)', text)
+        return match.group(1).strip() if match else None
+    except Exception as exc:
+        logger.debug("[ControlCenter] latest version check failed: %s", exc)
+        return None
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in re.findall(r"\d+", value)[:4])
+    except Exception:
+        return ()
+
+
+@router.get("/version-status")
+def version_status() -> dict[str, Any]:
+    installed = _read_control_center_version()
+    latest = _latest_control_center_version()
+    update_available = bool(latest and _version_tuple(latest) > _version_tuple(installed))
+    return {
+        "installed": installed,
+        "latest": latest,
+        "update_available": update_available,
+        "status": "update_available" if update_available else ("up_to_date" if latest else "unknown"),
+    }
 
 
 def _agent_get_impl(name: str) -> dict[str, Any]:
@@ -131,10 +173,10 @@ def agent_action_fixed(name: str, body: AgentActionBody) -> dict[str, Any]:
         logger.info("[ControlCenter] request completed: POST /agent/action name=%s action=%s", name, body.action)
         return result
     except ValueError as exc:
-        logger.exception("[ControlCenter] request value error: POST /agent/action name=%s action=%s", name, body.action)
+        logger.exception("[ControlCenter] request value error: POST /agent/action name=%s", name)
         raise _bad_request(exc) from exc
     except Exception as exc:
-        logger.exception("[ControlCenter] request failed: POST /agent/action name=%s action=%s", name, body.action)
+        logger.exception("[ControlCenter] request failed: POST /agent/action name=%s", name)
         raise _server_error(exc) from exc
 
 
