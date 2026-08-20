@@ -225,6 +225,10 @@ while ($true) {
         "5" { Write-Host "`nRunning: Open Hermes Dashboard" -ForegroundColor Cyan; $code = Run-PowerShellFile $Dashboard @() "dashboard-launch-wrapper" }
         default { Write-Host "`nInvalid selection. Please choose 1-6." -ForegroundColor Yellow; [void](Read-Host "Press Enter to return to menu"); continue }
     }
+    if ($choice -eq "5" -and $code -eq 0) {
+        Start-Sleep -Milliseconds 250
+        continue
+    }
     Write-Host ""
     if ($code -eq 0) { Write-Host "Operation finished successfully." -ForegroundColor Green }
     else { Write-Host "Operation failed with exit code $code." -ForegroundColor Red; Write-Host "The Setup menu will remain open." -ForegroundColor Yellow }
