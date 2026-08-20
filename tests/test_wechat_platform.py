@@ -85,9 +85,9 @@ def load_platform_module():
 
 def test_gateway_file_loader_can_import_hardened_runtime() -> None:
     module = load_platform_module()
-    desktop = module._load_desktop_class()
-    assert desktop.__name__ == "WeChatDesktop"
-    assert hasattr(desktop, "_ui_transaction")
+    desktop = module.legacy._load_desktop_class()
+    assert desktop is module._BoundFactory
+    assert hasattr(module.BoundWeChatDesktop, "_ui_transaction")
 
 
 def test_identical_text_with_distinct_ui_ids_is_not_same_inbound_message() -> None:
@@ -105,6 +105,15 @@ def test_configured_group_chat_is_routed_as_group() -> None:
     adapter.group_chats = {"Warehouse Support"}
     assert adapter._chat_type("Warehouse Support") == "group"
     assert adapter._chat_type("Alex") == "dm"
+
+
+def test_read_preview_is_baselined_once_then_changes_are_processed() -> None:
+    module = load_platform_module()
+    row = types.SimpleNamespace(unread=False)
+    check = module.WeChatDesktopPlatformAdapter._baseline_only
+    assert check(row, None) is True
+    assert check(row, ("old-preview", 1.0)) is False
+    assert check(types.SimpleNamespace(unread=True), None) is False
 
 
 def test_poll_failures_become_degraded_and_back_off() -> None:

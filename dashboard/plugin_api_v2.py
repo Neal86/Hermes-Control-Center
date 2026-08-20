@@ -133,7 +133,7 @@ def _validate_public_https_url(base_url: str) -> str:
 def _discover_models(base_url: str, credential: str | None) -> list[str]:
     root = _validate_public_https_url(base_url)
     endpoint = root if root.lower().endswith("/models") else root + "/models"
-    headers = {"Accept": "application/json", "User-Agent": "Hermes-Control-Center/0.5.26"}
+    headers = {"Accept": "application/json", "User-Agent": "Hermes-Control-Center/0.5.27"}
     if credential and str(credential).strip():
         headers["Authorization"] = "Bearer " + str(credential).strip()
     request = urllib.request.Request(endpoint, headers=headers, method="GET")

@@ -12,6 +12,10 @@ HERE = Path(__file__).resolve()
 # User platform plugins are installed flat under ~/.hermes/plugins/<name>.
 # The Control Center runtime is the sibling ~/.hermes/plugins/hermes-extensions.
 CONTROL_CENTER_ROOT = HERE.parent.parent / "hermes-extensions"
+if not CONTROL_CENTER_ROOT.is_dir() and (HERE.parents[2] / "wechat").is_dir():
+    # Source checkout: the platform lives below platforms/wechat-desktop
+    # while the Control Center package is the repository root.
+    CONTROL_CENTER_ROOT = HERE.parents[2]
 if not CONTROL_CENTER_ROOT.is_dir():
     raise RuntimeError(f"Hermes Control Center runtime not found at {CONTROL_CENTER_ROOT}")
 if str(CONTROL_CENTER_ROOT) not in sys.path:
@@ -127,13 +131,22 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
             if now - entry[1] < legacy.OUTBOUND_ECHO_SECONDS * 2
         }
 
+    @staticmethod
+    def _baseline_only(row, previous: tuple[str, float] | None) -> bool:
+        """Seed an already-read preview once; deliver only later changes."""
+        return not bool(getattr(row, "unread", False)) and previous is None
+
     async def _poll_loop(self) -> None:
-        """Poll unread session-list previews without opening chats or stealing focus."""
+        """Poll session-list previews without opening chats or stealing focus."""
         while self._running:
             sleep_for = self.poll_seconds
             try:
-                unread = await asyncio.to_thread(self.desktop.unread_chats, 200)
-                for row in unread:
+                # The currently open conversation never receives an unread
+                # badge. Scan every preview so a changed active-chat preview is
+                # still delivered; baseline existing read previews once to
+                # avoid replaying historical conversations at startup.
+                rows = await asyncio.to_thread(self.desktop.list_chats, 200)
+                for row in rows:
                     chat = str(row.name or "").strip()
                     if not chat:
                         continue
@@ -171,6 +184,9 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
                     now = time.monotonic()
 
                     previous = self._seen.get(chat)
+                    if self._baseline_only(row, previous):
+                        self._seen[chat] = (fingerprint, now)
+                        continue
                     if previous and previous[0] == fingerprint:
                         continue
                     if self._is_recent(
