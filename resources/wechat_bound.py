@@ -240,18 +240,20 @@ class BoundWeChatDesktop(_RuntimeWeChat):
         return matches
 
     def _select_session_background(self, control, *, chat: str) -> None:
-        """Select one session using UIA SelectionItem only; never Invoke or click."""
+        """Select one session with the raw UIA SelectionItem pattern only.
+
+        Do not call pywinauto wrapper.select(): on current WeChat builds that
+        wrapper can transfer foreground focus even though SelectionItem itself is
+        available. The raw COM pattern is the only allowed background path.
+        """
         before = self._foreground_hwnd()
         try:
-            if hasattr(control, "select"):
-                control.select()
-            else:
-                control.iface_selection_item.Select()
+            control.iface_selection_item.Select()
         except Exception as exc:
             raise WeChatUnavailable(
                 f"BACKGROUND_SEND_UNSUPPORTED: WeChat session {chat!r} has no background SelectionItem pattern"
             ) from exc
-        time.sleep(0.2)
+        time.sleep(0.25)
         self._assert_no_focus_takeover(before=before, operation=f"select_session:{chat}")
 
     def open_chat(self, chat: str) -> None:
@@ -284,7 +286,8 @@ class BoundWeChatDesktop(_RuntimeWeChat):
                 "bound": True,
                 "window_handle": self.window_handle,
                 "strict_background": True,
-                "read_only_receive": True,
+                "read_only_receive": False,
+                "background_chat_selection": True,
                 "foreground_fallback": False,
                 "window_resize_allowed": False,
                 "window_move_allowed": False,
