@@ -5,6 +5,7 @@ import ctypes
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from datetime import UTC, datetime
@@ -19,6 +20,10 @@ from .bindings import ResourceBindings
 _LOCKS_GUARD = threading.Lock()
 _RESOURCE_LOCKS: dict[str, threading.RLock] = {}
 _LOCAL = threading.local()
+_STATUS_PREFIX_RE = re.compile(
+    r"^\s*(?:已置顶\s*)?(?:(?:[\[【(（]\s*\d+\s*条\s*[\]】)）])\s*)+",
+    re.IGNORECASE,
+)
 
 
 def _thread_lock(resource_id: str) -> threading.RLock:
@@ -29,12 +34,11 @@ def _thread_lock(resource_id: str) -> threading.RLock:
 class BoundWeChatDesktop(_RuntimeWeChat):
     """Strict background-only WeChat runtime pinned to one Agent resource.
 
-    Receive operations are read-only UIA tree scans. Send operations may change
-    the selected WeChat conversation through SelectionItem, but never call
-    Invoke/click, SetForegroundWindow, BringWindowToTop, ShowWindow, SetWindowPos,
-    or physical keyboard/mouse input. If the bound WeChat window is minimized or
-    the target session cannot be selected through background UIA patterns, the
-    operation fails closed instead of taking over the user's desktop.
+    Receive operations use background UIA. A changed chat may be selected through
+    SelectionItem so its real recent messages can be read, but the runtime never
+    calls Invoke/click, SetForegroundWindow, BringWindowToTop, ShowWindow,
+    SetWindowPos, or physical keyboard/mouse input. If a different chat would
+    require foreground activation, the operation fails closed.
     """
 
     def __init__(self, agent: str, resource_id: str | None = None, *, lock_timeout: float = 15.0) -> None:
@@ -194,7 +198,7 @@ class BoundWeChatDesktop(_RuntimeWeChat):
                     continue
                 lower = text.lower()
                 unread = any(marker.lower() in lower for marker in self.UNREAD_MARKERS) or bool(
-                    __import__("re").search(r"[\[【(（]\s*\d+\s*条\s*[\]】)）]", text)
+                    re.search(r"[\[【(（]\s*\d+\s*条\s*[\]】)）]", text)
                 )
                 preview_parts = text_children[1:3] if len(text_children) > 1 else own_lines[1:4]
                 preview = " ".join(preview_parts)
@@ -239,13 +243,33 @@ class BoundWeChatDesktop(_RuntimeWeChat):
                 continue
         return matches
 
-    def _select_session_background(self, control, *, chat: str) -> None:
-        """Select one session with the raw UIA SelectionItem pattern only.
+    @staticmethod
+    def _session_selected(control) -> bool:
+        """Read SelectionItem.CurrentIsSelected without changing the UI."""
+        try:
+            return bool(control.iface_selection_item.CurrentIsSelected)
+        except Exception:
+            return False
 
-        Do not call pywinauto wrapper.select(): on current WeChat builds that
-        wrapper can transfer foreground focus even though SelectionItem itself is
-        available. The raw COM pattern is the only allowed background path.
+    def _is_current_target(self, win, chat: str) -> bool:
+        """Verify target using title OR the session's UIA selected state.
+
+        Modern WeChat sometimes exposes a stale/missing current_chat_name_label,
+        causing the base verifier to falsely report that the already-selected
+        source chat is not current. Re-selecting it then triggers foreground
+        activation. Reading CurrentIsSelected is side-effect free and prevents
+        that unnecessary second Select().
         """
+        try:
+            if super()._is_current_target(win, chat):
+                return True
+        except Exception:
+            pass
+        matches = self._session_matches(win, chat)
+        return len(matches) == 1 and self._session_selected(matches[0])
+
+    def _select_session_background(self, control, *, chat: str) -> None:
+        """Select one session with the raw UIA SelectionItem pattern only."""
         before = self._foreground_hwnd()
         try:
             control.iface_selection_item.Select()
@@ -272,10 +296,33 @@ class BoundWeChatDesktop(_RuntimeWeChat):
                 f"BACKGROUND_SEND_UNSUPPORTED: session {chat!r} is not exposed in the current session list; "
                 "strict background mode will not search, resize, activate, or click the WeChat window"
             )
+        if self._session_selected(matches[0]):
+            return
         self._select_session_background(matches[0], chat=chat)
         win = self._main_window()
         if not self._is_current_target(win, chat):
             raise WeChatUnavailable(f"Background target verification failed after selecting {chat!r}")
+
+    @staticmethod
+    def _clean_message_text(text: str) -> str:
+        value = str(text or "").strip()
+        previous = None
+        while value and value != previous:
+            previous = value
+            value = _STATUS_PREFIX_RE.sub("", value).strip()
+        return value
+
+    def get_messages(self, chat: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Deep-read the exact chat and remove session UI status prefixes."""
+        rows = super().get_messages(chat=chat, limit=limit)
+        cleaned: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["text"] = self._clean_message_text(item.get("text") or "")
+            if not item["text"]:
+                continue
+            cleaned.append(item)
+        return cleaned
 
     def status(self) -> dict:
         result = super().status()
@@ -288,6 +335,7 @@ class BoundWeChatDesktop(_RuntimeWeChat):
                 "strict_background": True,
                 "read_only_receive": False,
                 "background_chat_selection": True,
+                "selected_state_verification": True,
                 "foreground_fallback": False,
                 "window_resize_allowed": False,
                 "window_move_allowed": False,
