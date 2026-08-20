@@ -97,10 +97,75 @@ function Sync-InstalledDashboardManifest {
     Write-Host "Dashboard manifest synced to v$Version (UTF-8 no BOM, api=plugin_api.py)." -ForegroundColor Cyan
 }
 
+function Get-HermesProfiles {
+    $items = New-Object System.Collections.Generic.List[string]
+    $items.Add("default")
+    $profilesRoot = Join-Path $HermesHome "profiles"
+    if (Test-Path -LiteralPath $profilesRoot -PathType Container) {
+        Get-ChildItem -LiteralPath $profilesRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_.Name -match '^[a-z0-9][a-z0-9_-]{0,63}$') { $items.Add($_.Name.ToLowerInvariant()) }
+        }
+    }
+    return @($items | Select-Object -Unique)
+}
+
+function Get-ProfileHome([string]$Profile) {
+    if ($Profile -eq "default") { return $HermesHome }
+    return Join-Path (Join-Path $HermesHome "profiles") $Profile
+}
+
+function Invoke-GatewayCommand {
+    param([string]$Profile,[ValidateSet("status","restart")][string]$Verb)
+    $oldHome = $env:HERMES_HOME
+    try {
+        $env:HERMES_HOME = Get-ProfileHome $Profile
+        $args = if ($Profile -eq "default") { @("gateway",$Verb) } else { @("-p",$Profile,"gateway",$Verb) }
+        return (& $HermesCommand.Source @args 2>&1 | Out-String).Trim()
+    } finally {
+        $env:HERMES_HOME = $oldHome
+    }
+}
+
+function Test-GatewayRunning([string]$Profile) {
+    try {
+        $text = (Invoke-GatewayCommand -Profile $Profile -Verb "status").ToLowerInvariant()
+        return ($text -match '\brunning\b') -and ($text -notmatch 'not\s+running|stopped')
+    } catch { return $false }
+}
+
+function Restart-PreviouslyRunningGateways([string[]]$Profiles) {
+    if (-not $Profiles -or $Profiles.Count -eq 0) {
+        Write-Host "No running Hermes Gateway was detected before update; nothing to restart." -ForegroundColor DarkGray
+        return
+    }
+    Write-Host "Restarting Hermes Gateway processes so updated plugin code is loaded..." -ForegroundColor Cyan
+    foreach ($profile in $Profiles) {
+        try {
+            $output = Invoke-GatewayCommand -Profile $profile -Verb "restart"
+            if ($output) { Write-Host ("  [$profile] " + ($output -replace "`r?`n", " ")) -ForegroundColor DarkGray }
+            Start-Sleep -Milliseconds 700
+            if (-not (Test-GatewayRunning $profile)) {
+                throw "gateway did not report running after restart"
+            }
+            Write-Host "  [$profile] Gateway restarted and verified." -ForegroundColor Green
+        } catch {
+            throw "Failed to restart Hermes Gateway for profile '$profile': $($_.Exception.Message)"
+        }
+    }
+}
+
 $HermesCommand = Get-Command hermes -ErrorAction SilentlyContinue
 if (-not $HermesCommand) { throw "Hermes is not installed or is not on PATH." }
 if (-not (Test-Path -LiteralPath $InnerInstaller)) { throw "Missing install.ps1" }
 if (-not (Test-Path -LiteralPath $Requirements)) { throw "Missing requirements-windows.txt" }
+
+$RunningGateways = @()
+foreach ($profile in Get-HermesProfiles) {
+    if (Test-GatewayRunning $profile) { $RunningGateways += $profile }
+}
+if ($RunningGateways.Count -gt 0) {
+    Write-Host ("Gateways currently running and scheduled for automatic restart after update: " + ($RunningGateways -join ", ")) -ForegroundColor Cyan
+}
 
 Write-Host "Stopping any running Hermes Dashboard so updated plugin code cannot remain cached..." -ForegroundColor Cyan
 try { & $HermesCommand.Source dashboard --stop 2>&1 | Out-Host } catch { Write-Host "Dashboard stop returned a non-fatal error: $($_.Exception.Message)" -ForegroundColor DarkGray }
@@ -131,7 +196,9 @@ if ($code -ne 0) { throw "Control Center installer failed with exit code $code. 
 
 $version = Read-ControlCenterVersion
 Sync-InstalledDashboardManifest -Version $version
+Restart-PreviouslyRunningGateways -Profiles $RunningGateways
 
 Write-Host "Hermes Control Center installation completed successfully." -ForegroundColor Green
-Write-Host "Dashboard was stopped during upgrade. Use 'Open Hermes Dashboard' to start a fresh process with the new plugin." -ForegroundColor Green
+Write-Host "Any Gateway that was running before the update has been automatically restarted and verified." -ForegroundColor Green
+Write-Host "Dashboard remains stopped during upgrade; use 'Open Hermes Dashboard' when you want to open the UI." -ForegroundColor Green
 exit 0
