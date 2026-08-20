@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import importlib.util
+import os
 import re
 import sys
 import time
@@ -62,10 +62,14 @@ legacy._load_desktop_class = lambda: _BoundFactory
 
 
 class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
-    """Agent-bound WeChat gateway with focus-safe background receive routing."""
+    """Agent-bound WeChat gateway with unrestricted intake and exact source routing."""
 
     def __init__(self, config):
         super().__init__(config)
+        # Chat/user allowlists are deliberately disabled for this local desktop
+        # customer-service adapter. Every DM is accepted. Group messages only
+        # enter the Agent when WeChat marks the logged-in account as mentioned.
+        self.allowed_chats = set()
         self._health_path = (
             root_hermes_home()
             / "plugin-data"
@@ -74,6 +78,10 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
             / "gateway-health.json"
         )
         self._write_health()
+
+    def _allowed(self, chat: str) -> bool:
+        del chat
+        return True
 
     @staticmethod
     def _preview_message(preview: str) -> str:
@@ -87,7 +95,15 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
         value = str(text or "").lower()
         return any(
             marker in value
-            for marker in ("有人@我", "@我", "提到了你", "mentioned you", "mentioned me")
+            for marker in (
+                "有人@我",
+                "[有人@我]",
+                "【有人@我】",
+                "@我",
+                "提到了你",
+                "mentioned you",
+                "mentioned me",
+            )
         )
 
     @staticmethod
@@ -119,20 +135,24 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
                 unread = await asyncio.to_thread(self.desktop.unread_chats, 200)
                 for row in unread:
                     chat = str(row.name or "").strip()
-                    if not chat or not self._allowed(chat):
+                    if not chat:
                         continue
 
-                    # Do not call get_messages(chat) here. That method opens the
-                    # requested conversation when it is not already selected, and
-                    # UIA Invoke can activate WeChat and steal the user's focus.
-                    chat_type = self._chat_type(chat)
                     preview = self._preview_message(getattr(row, "preview", ""))
                     if not preview:
                         continue
 
-                    # DMs always route. Groups only route when WeChat's session-list
-                    # preview says this logged-in account was mentioned.
-                    if chat_type == "group" and not self._group_mentions_me(preview):
+                    mentioned_me = self._group_mentions_me(preview)
+                    # A mention marker is authoritative evidence that this is a
+                    # group conversation. Remember it so future ordinary group
+                    # messages are ignored even if group_chats was not preconfigured.
+                    if mentioned_me:
+                        self.group_chats.add(chat)
+                    chat_type = self._chat_type(chat)
+
+                    # Every private chat is accepted. Groups are accepted only when
+                    # the logged-in customer-service account is explicitly @mentioned.
+                    if chat_type == "group" and not mentioned_me:
                         continue
 
                     sender, text = self._preview_sender(chat_type, chat, preview)
@@ -178,14 +198,17 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
                         message_id=f"wechat-desktop-{fingerprint[:20]}-{int(now)}",
                         raw_message={
                             "chat": chat,
+                            "source_chat_id": chat,
                             "chat_type": chat_type,
                             "text": text,
                             "sender": sender,
+                            "mentioned_me": mentioned_me,
                             "display_time": None,
                             "direction": "inbound",
                             "ui_message_id": None,
                             "transport": "windows-uia-session-preview",
                             "focus_safe_receive": True,
+                            "reply_route": "source_chat_only",
                         },
                         timestamp=legacy.datetime.now(legacy.UTC),
                     )
@@ -206,4 +229,24 @@ validate_config = legacy.validate_config
 
 
 def register(ctx):
-    return legacy.register(ctx)
+    # Explicitly opt this local desktop adapter into all senders. This is scoped
+    # only to wechat_desktop; it does not open Telegram/Discord/other gateways.
+    os.environ["WECHAT_DESKTOP_ALLOW_ALL_USERS"] = "true"
+    ctx.register_platform(
+        name="wechat_desktop",
+        label="WeChat Desktop",
+        adapter_factory=lambda cfg: WeChatDesktopPlatformAdapter(cfg),
+        check_fn=check_requirements,
+        validate_config=validate_config,
+        env_enablement_fn=legacy._env_enablement,
+        cron_deliver_env_var="WECHAT_DESKTOP_HOME_CHAT",
+        allow_all_env="WECHAT_DESKTOP_ALLOW_ALL_USERS",
+        max_message_length=4000,
+        platform_hint=(
+            "This request came from the Agent-bound local Windows WeChat gateway. "
+            "Never use computer_use or any generic desktop tool to operate WeChat/Weixin. "
+            "Use bound browser tools when web lookup is needed. Return only the customer-facing reply; "
+            "the Gateway will deliver it exactly once to the original source chat_id."
+        ),
+        emoji="💬",
+    )
