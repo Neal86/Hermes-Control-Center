@@ -20,7 +20,10 @@ COMPATIBILITY_ORDER = [
 ]
 CANONICAL_ENTRY = "canonical_ui.js"
 REGISTER_ENTRY = "index.js"
-ORDER = COMPATIBILITY_ORDER + [CANONICAL_ENTRY, REGISTER_ENTRY]
+# DOM-only enhancements run after canonical registration and are intentionally
+# outside the canonical source baseline. They must never replace app ownership.
+POST_REGISTER_ORDER = ["version_badge.js"]
+ORDER = COMPATIBILITY_ORDER + [CANONICAL_ENTRY, REGISTER_ENTRY] + POST_REGISTER_ORDER
 BASELINE_FILE = "source-baseline.json"
 
 
