@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -32,6 +33,32 @@ class HermesCLI:
         env["HERMES_HOME"] = str(home)
         return env
 
+    @staticmethod
+    def _is_gateway_spawn_command(command: list[str]) -> bool:
+        """Return True for gateway actions that can spawn a persistent child.
+
+        On Windows, ``hermes gateway start/restart`` launches the long-lived
+        gateway and then exits. If Control Center captures stdout/stderr with
+        PIPE, the persistent gateway can inherit those pipe handles. Python's
+        ``communicate()`` then waits for EOF forever even though the Hermes CLI
+        parent already exited, which surfaced as a false 90-second timeout.
+        """
+        lowered = [str(part or "").strip().lower() for part in command]
+        try:
+            index = lowered.index("gateway")
+        except ValueError:
+            return False
+        return index + 1 < len(lowered) and lowered[index + 1] in {"start", "restart"}
+
+    @staticmethod
+    def _decode_capture(handle) -> str:
+        try:
+            handle.flush()
+            handle.seek(0)
+            return handle.read().decode("utf-8", "replace").strip()
+        except Exception:
+            return ""
+
     def run_text(
         self,
         command: list[str],
@@ -39,6 +66,27 @@ class HermesCLI:
         env: dict[str, str] | None = None,
         timeout: int = 60,
     ) -> str:
+        if os.name == "nt" and self._is_gateway_spawn_command(command):
+            # Do not use PIPE for Windows gateway start/restart. The persistent
+            # grandchild may inherit a pipe writer and keep communicate() open
+            # after the short-lived CLI exits. File-backed capture waits only
+            # for the direct command process and remains readable afterwards.
+            with tempfile.TemporaryFile(mode="w+b") as stdout_file, tempfile.TemporaryFile(mode="w+b") as stderr_file:
+                proc = subprocess.run(
+                    command,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    timeout=timeout,
+                    env=env,
+                    check=False,
+                )
+                stdout = self._decode_capture(stdout_file)
+                stderr = self._decode_capture(stderr_file)
+            if proc.returncode != 0:
+                detail = (stderr or stdout or "Hermes command failed").strip()
+                raise RuntimeError(f"{detail} (exit {proc.returncode})")
+            return stdout
+
         proc = subprocess.run(
             command,
             capture_output=True,
