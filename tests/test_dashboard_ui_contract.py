@@ -103,6 +103,13 @@ def test_agent_dialog_surfaces_errors_and_loads_provider_fallbacks() -> None:
     assert "Provider/Model choices could not be loaded" in CORE_JS
 
 
+def test_agent_device_picker_shows_windows_owned_by_other_agents() -> None:
+    assert 'const rows = online.filter(function (row) { return row.kind === agentDeviceTab; });' in CORE_JS
+    assert '" · assigned to Agent " + row.assigned_agent' in CORE_JS
+    assert 'title: "Transfer " + (resource.kind === "wechat" ? "WeChat" : "Browser") + " window?"' in CORE_JS
+    assert "selectAgentResource(row)" in CORE_JS
+
+
 def test_resource_selector_preserves_browser_choice_and_hides_offline_rows() -> None:
     assert "managed:chrome" in RESOURCE_JS
     assert "managed:edge" in RESOURCE_JS

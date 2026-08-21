@@ -363,6 +363,21 @@
       });
     }
 
+    function selectAgentResource(resource) {
+      if (!resource) return;
+      if (resource.assigned_agent && resource.assigned_agent !== agentDetail.name) {
+        askConfirm({
+          title: "Transfer " + (resource.kind === "wechat" ? "WeChat" : "Browser") + " window?",
+          message: "This window is currently assigned to Agent " + resource.assigned_agent + ".",
+          detail: "Transfer it to Agent " + agentDetail.name + "? The previous Agent will lose access.",
+          confirmLabel: "Transfer window",
+          destructive: true
+        }, function () { return bindAgentResource(resource.kind, resource.id); });
+        return;
+      }
+      bindAgentResource(resource.kind, resource.id);
+    }
+
     async function refreshAgentDevices() {
       if (!agentDetail || busy) return;
       setAgentResourcesLoading(true);
@@ -397,7 +412,7 @@
 
     function AgentResourcePicker() {
       const online = availableResources.filter(function (row) { return row.online; });
-      const rows = online.filter(function (row) { return row.kind === agentDeviceTab && (!row.assigned_agent || row.assigned_agent === agentDetail.name); });
+      const rows = online.filter(function (row) { return row.kind === agentDeviceTab; });
       const current = agentResources.find(function (row) { return row.kind === agentDeviceTab; });
       const wechatCount = online.filter(function (row) { return row.kind === "wechat"; }).length;
       return h("section", { className: "hx-agent-device" },
@@ -412,9 +427,10 @@
         agentResourcesLoading ? h(LoadingBlock, null, "Loading resources…") : h("div", { className: "hx-device-list" }, rows.length ? rows.map(function (row) {
           const selected = Boolean(current && current.id === row.id);
           const title = row.title || row.app || (row.kind === "wechat" ? "WeChat" : "Browser");
-          const detail = row.kind === "wechat" ? "PID " + row.pid + " · local desktop window" : (row.app || "browser") + " · " + (row.profile || "Default") + (row.debug_port ? " · controllable · CDP " + row.debug_port : " · visible only · use Launch / reconnect above");
+          const owner = row.assigned_agent && row.assigned_agent !== agentDetail.name ? " · assigned to Agent " + row.assigned_agent : "";
+          const detail = (row.kind === "wechat" ? "PID " + row.pid + " · local desktop window" : (row.app || "browser") + " · " + (row.profile || "Default") + (row.debug_port ? " · controllable · CDP " + row.debug_port : " · visible only · use Launch / reconnect above")) + owner;
           return h("div", { className: "hx-device-row" + (selected ? " selected" : ""), key: row.id },
-            h("button", { className: "hx-device-select", type: "button", disabled: Boolean(busy) || agentDirty || (row.kind === "browser" && !row.attachable), onClick: function () { bindAgentResource(row.kind, row.id); } }, h("span", { className: "hx-device-dot" }), h("span", { className: "hx-device-copy" }, h("span", { className: "hx-device-title" }, title), h("span", { className: "hx-device-detail" }, detail)), h("span", { className: "hx-device-check" }, selected ? "✓" : "")),
+            h("button", { className: "hx-device-select", type: "button", disabled: Boolean(busy) || agentDirty || (row.kind === "browser" && !row.attachable), onClick: function () { selectAgentResource(row); } }, h("span", { className: "hx-device-dot" }), h("span", { className: "hx-device-copy" }, h("span", { className: "hx-device-title" }, title), h("span", { className: "hx-device-detail" }, detail)), h("span", { className: "hx-device-check" }, selected ? "✓" : "")),
             h("button", { className: "hx-device-open", type: "button", disabled: busyIs("resource-focus:" + row.id), onClick: function () { focusAgentDevice(row); }, "aria-label": "Open " + title }, busyIs("resource-focus:" + row.id) ? "Opening…" : "Open")
           );
         }) : h("div", { className: "hx-device-empty" }, "No available " + (agentDeviceTab === "wechat" ? "WeChat" : "browser") + " windows.")),
