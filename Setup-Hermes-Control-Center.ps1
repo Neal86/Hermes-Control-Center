@@ -29,7 +29,11 @@ function Write-Step([string]$Message) {
 }
 
 function Get-RemoteText([string]$Uri) {
-    try { return (Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 15 -Headers @{ "Cache-Control" = "no-cache" }).Content }
+    try {
+        $separator = if ($Uri.Contains("?")) { "&" } else { "?" }
+        $freshUri = $Uri + $separator + "hcc_cb=" + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        return (Invoke-WebRequest -UseBasicParsing -Uri $freshUri -TimeoutSec 15 -Headers @{ "Cache-Control" = "no-cache, no-store, max-age=0"; "Pragma" = "no-cache"; "User-Agent" = "Hermes-Control-Center-Setup" }).Content
+    }
     catch { return $null }
 }
 
