@@ -1,0 +1,33 @@
+name: Windows CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Python syntax check
+        shell: pwsh
+        run: |
+          python -m py_compile compatibility.py management/service.py management/routed_service.py dashboard/plugin_api_v3.py
+      - name: PowerShell syntax check
+        shell: pwsh
+        run: |
+          $files = @('Setup.cmd','Setup-Bootstrap.ps1','Setup-Loop-v8.ps1','Dashboard-Launch-v4.ps1')
+          foreach ($file in $files) {
+            if ($file.EndsWith('.ps1')) {
+              $tokens = $null
+              $errors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+              if ($errors.Count -gt 0) { $errors | Format-List | Out-String | Write-Error; exit 1 }
+            }
+          }
