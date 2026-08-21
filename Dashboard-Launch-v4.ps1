@@ -26,9 +26,18 @@ function Test-ControlCenterApi {
     param([int]$Port)
     try {
         $url = "http://127.0.0.1:$Port/api/plugins/hermes-extensions/capabilities"
-        $response = Invoke-WebRequest -Uri $url -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 3
+        $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 3
         return [int]$response.StatusCode -ne 404
-    } catch { return $false }
+    } catch {
+        # Newer Hermes releases protect plugin APIs with dashboard auth. A
+        # 401/403 proves that the route is mounted; only 404 or a connection
+        # failure means Control Center is not ready.
+        $errorResponse = $_.Exception.Response
+        if ($errorResponse -and $null -ne $errorResponse.StatusCode) {
+            return [int]$errorResponse.StatusCode -ne 404
+        }
+        return $false
+    }
 }
 
 function Find-Hermes {
@@ -137,7 +146,7 @@ function Show-RuntimeDiagnostics {
 
     try {
         $pluginsUrl = "http://127.0.0.1:$Port/api/dashboard/plugins"
-        $pluginsResponse = Invoke-WebRequest -Uri $pluginsUrl -UseBasicParsing -SkipHttpErrorCheck -TimeoutSec 4
+        $pluginsResponse = Invoke-WebRequest -Uri $pluginsUrl -UseBasicParsing -TimeoutSec 4
         Write-Host ("Dashboard plugin discovery HTTP: " + [int]$pluginsResponse.StatusCode)
         if ($pluginsResponse.Content) {
             $text = [string]$pluginsResponse.Content
@@ -154,7 +163,7 @@ function Show-RuntimeDiagnostics {
         Write-Host ""
         Write-Host "Relevant Hermes errors.log entries:" -ForegroundColor Yellow
         $all = @(Get-Content -LiteralPath $errorsLog -Tail 500 -ErrorAction SilentlyContinue)
-        $matches = New-Object System.Collections.Generic.List[string]
+        $diagnosticMatches = New-Object System.Collections.Generic.List[string]
         for ($i = 0; $i -lt $all.Count; $i++) {
             $lineText = [string]$all[$i]
             if ($lineText -match 'hermes-extensions|Failed to load plugin|plugin_api|dashboard plugin') {
@@ -162,12 +171,12 @@ function Show-RuntimeDiagnostics {
                 $end = [Math]::Min($all.Count - 1, $i + 12)
                 for ($j = $start; $j -le $end; $j++) {
                     $entry = [string]$all[$j]
-                    if (-not $matches.Contains($entry)) { $matches.Add($entry) }
+                    if (-not $diagnosticMatches.Contains($entry)) { [void]$diagnosticMatches.Add($entry) }
                 }
             }
         }
-        if ($matches.Count -gt 0) {
-            $matches | ForEach-Object { Write-Host $_ }
+        if ($diagnosticMatches.Count -gt 0) {
+            $diagnosticMatches | ForEach-Object { Write-Host $_ }
         } else {
             Write-Host "No hermes-extensions/plugin API error was found in the last 500 lines."
             Write-Host "Last 80 lines of errors.log:"

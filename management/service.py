@@ -173,15 +173,21 @@ class ManagementCenter:
 
     def _probe_agent_runtime(self, row: dict[str, Any]) -> None:
         profile = str(row["name"])
+        errors: list[str] = []
         try:
             show = self._parse_profile_show(
                 self.cli.run_text([self.hermes, "profile", "show", profile], timeout=30)
             )
-            row["gateway"] = str(show.get("gateway") or "unknown")
             if not row.get("model"):
                 row["model"] = str(show.get("model") or "")
         except Exception as exc:
-            row["status_error"] = str(exc)
+            errors.append(str(exc))
+        try:
+            row["gateway"] = self._normalized_gateway_state(profile)
+        except Exception as exc:
+            errors.append(str(exc))
+            row["gateway"] = "error"
+        row["status_error"] = "; ".join(errors) or None
 
     def agent_get(self, name: str, *, probe_runtime: bool = True) -> dict[str, Any]:
         profile = self._normalize_profile(name)
@@ -299,6 +305,16 @@ class ManagementCenter:
             return text.strip().lower()
         except Exception as exc:
             return f"error: {exc}".lower()
+
+    def _normalized_gateway_state(self, profile: str) -> str:
+        state = self._gateway_state(profile)
+        if "running" in state and "not running" not in state and "stopped" not in state:
+            return "running"
+        if any(marker in state for marker in ("not running", "stopped", "no gateway process detected", "recorded process is gone")):
+            return "stopped"
+        if state.startswith("error:"):
+            return "error"
+        return "unknown"
 
     def _verify_gateway_transition(self, profile: str, expected_running: bool, timeout: float = 12.0) -> dict[str, Any]:
         deadline = time.monotonic() + timeout

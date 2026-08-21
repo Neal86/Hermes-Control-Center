@@ -106,6 +106,17 @@ function Get-HermesLatestVersion {
     return $null
 }
 
+function Test-HermesRuntimeNeedsUpdate {
+    $cmd = Get-HermesCommand
+    if (-not $cmd) { return $false }
+    try {
+        $versionText = (& $cmd.Source --version 2>&1 | Out-String)
+        if ($versionText -match '(?i)update available') { return $true }
+        $doctorText = (& $cmd.Source doctor 2>&1 | Out-String)
+        return $doctorText -match '(?i)SQLite .*WAL-reset bug|run [`'']?hermes update'
+    } catch { return $false }
+}
+
 function Get-ControlCenterInstalledVersion {
     return Read-ManifestVersion (Join-Path $HermesHome "plugins\hermes-extensions\plugin.yaml")
 }
@@ -178,8 +189,11 @@ function Update-Hermes {
         return
     }
     if ($cmp -eq 0) {
-        Write-Host "Hermes Agent is already current (v$installed)." -ForegroundColor Green
-        return
+        if (-not (Test-HermesRuntimeNeedsUpdate)) {
+            Write-Host "Hermes Agent is already current (v$installed)." -ForegroundColor Green
+            return
+        }
+        Write-Host "Hermes version matches, but its embedded runtime or checkout needs repair." -ForegroundColor Yellow
     }
     if ($cmp -gt 0) {
         Write-Host "Installed Hermes v$installed is newer than available v$latest. Downgrade blocked." -ForegroundColor Yellow
@@ -189,7 +203,8 @@ function Update-Hermes {
     $kind = Get-HermesInstallKind
     Write-Step "Updating Hermes Agent v$installed -> v$latest"
     if ($kind -eq "official-windows") {
-        Run-OfficialHermesInstaller
+        & (Get-HermesCommand).Source update
+        if ($LASTEXITCODE -ne 0) { throw "Hermes runtime update exited with code $LASTEXITCODE." }
         return
     }
     if ($kind -eq "uv-tool") {

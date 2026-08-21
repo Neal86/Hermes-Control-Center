@@ -42,6 +42,22 @@ def test_agent_list_reads_native_profile_state(tmp_path: Path) -> None:
     assert rows[1]["gateway"] == "running"
 
 
+def test_agent_gateway_status_is_probed_directly(tmp_path: Path) -> None:
+    write_profile(tmp_path)
+
+    def fake(command, **kwargs):
+        if command[-2:] == ["gateway", "status"]:
+            return "No gateway process detected\nGateway is not running"
+        if command[:4] == ["hermes", "profile", "show", "default"]:
+            return "Model: test/model"
+        return ""
+
+    center = center_with_cli(tmp_path, fake)
+    agent = center.agent_get("default")
+    assert agent["gateway"] == "stopped"
+    assert agent["status_error"] is None
+
+
 def test_profile_commands_keep_hermes_home_at_root(tmp_path: Path) -> None:
     write_profile(tmp_path)
     write_profile(tmp_path / "profiles" / "support")
