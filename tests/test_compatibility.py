@@ -74,3 +74,10 @@ def test_project_unavailable_payload_is_explicit() -> None:
     assert "hermes project" in payload["message"]
     assert "Agents" in payload["message"]
     assert "restarted or reloaded" in payload["message"]
+
+
+def test_gateway_start_is_recognized_as_a_windows_spawn_command() -> None:
+    cli = compat.HermesCLI("hermes.exe")
+    assert cli._is_gateway_spawn_command(["hermes.exe", "-p", "11", "gateway", "start"])
+    assert cli._is_gateway_spawn_command(["hermes.exe", "gateway", "restart"])
+    assert not cli._is_gateway_spawn_command(["hermes.exe", "-p", "11", "gateway", "status"])

@@ -129,3 +129,11 @@ def test_mobile_and_focus_styles_are_touch_friendly() -> None:
 def test_dashboard_api_exposes_wechat_management_endpoints() -> None:
     for route in ("/wechat/health", "/wechat/status", "/wechat/chats", "/wechat/unread", "/wechat/dry-run"):
         assert route in API
+
+
+def test_wechat_binding_enables_the_agent_platform_and_restarts_gateway() -> None:
+    assert '"platforms.wechat_desktop.enabled", "true" if enabled else "false"' in API
+    assert '"platforms.wechat_desktop.extra.bound_agent", agent' in API
+    assert '"platforms.wechat_desktop.extra.bound_resource_id", resource_id' in API
+    assert 'management.agent_action(agent, "gateway_restart")' in API
+    assert "previous_agent = bindings.list().get(resource_id)" in API

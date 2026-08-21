@@ -42,6 +42,17 @@ def test_agent_list_reads_native_profile_state(tmp_path: Path) -> None:
     assert rows[1]["gateway"] == "running"
 
 
+def test_profile_commands_keep_hermes_home_at_root(tmp_path: Path) -> None:
+    write_profile(tmp_path)
+    write_profile(tmp_path / "profiles" / "support")
+    center = center_with_cli(tmp_path, lambda command, **kwargs: "Gateway: stopped")
+
+    env = center._env_for("support")
+
+    assert Path(env["HERMES_HOME"]) == tmp_path
+    assert center._profile_cli("support", "gateway", "status")[-4:] == ["-p", "support", "gateway", "status"]
+
+
 def test_agent_create_uses_official_profile_and_config_commands(tmp_path: Path) -> None:
     write_profile(tmp_path)
     calls: list[list[str]] = []

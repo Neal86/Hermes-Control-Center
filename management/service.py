@@ -88,7 +88,12 @@ class ManagementCenter:
         return self.cli.profile_command(self._normalize_profile(name), *args)
 
     def _env_for(self, name: str | None) -> dict[str, str]:
-        return self.cli.profile_env(self._profile_home(name))
+        # Profile selection is already carried by ``-p <name>`` in
+        # ``_profile_cli``. Pointing HERMES_HOME at the profile directory as
+        # well makes Hermes resolve the profile twice (profiles/<name>/profiles/<name>)
+        # and can leave gateway state files referring to another profile.
+        self._profile_home(name)  # Validate the requested profile first.
+        return self.cli.profile_env(self.root)
 
     def _active_profile(self) -> str:
         marker = self.root / "active_profile"
