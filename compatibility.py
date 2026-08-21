@@ -35,14 +35,6 @@ class HermesCLI:
 
     @staticmethod
     def _is_gateway_spawn_command(command: list[str]) -> bool:
-        """Return True for gateway actions that can spawn a persistent child.
-
-        On Windows, ``hermes gateway start/restart`` launches the long-lived
-        gateway and then exits. If Control Center captures stdout/stderr with
-        PIPE, the persistent gateway can inherit those pipe handles. Python's
-        ``communicate()`` then waits for EOF forever even though the Hermes CLI
-        parent already exited, which surfaced as a false 90-second timeout.
-        """
         lowered = [str(part or "").strip().lower() for part in command]
         try:
             index = lowered.index("gateway")
@@ -50,14 +42,33 @@ class HermesCLI:
             return False
         return index + 1 < len(lowered) and lowered[index + 1] in {"start", "restart"}
 
-    @staticmethod
-    def _decode_capture(handle) -> str:
-        try:
-            handle.flush()
-            handle.seek(0)
-            return handle.read().decode("utf-8", "replace").strip()
-        except Exception:
-            return ""
+    def _launch_gateway_spawn_command(
+        self,
+        command: list[str],
+        *,
+        env: dict[str, str] | None = None,
+    ) -> str:
+        """Fire Windows gateway start/restart without waiting on the launcher.
+
+        Hermes' Windows gateway start path can legitimately stay attached while it
+        creates/repairs the persistent gateway process. Waiting for that CLI inside
+        a Dashboard request made the UI sit on Working... and eventually time out.
+        The management layer already verifies gateway state after this call, so the
+        correct contract here is launch -> return -> poll status.
+        """
+        creationflags = 0
+        for flag_name in ("CREATE_NO_WINDOW", "DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
+            creationflags |= int(getattr(subprocess, flag_name, 0) or 0)
+        subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            close_fds=True,
+            creationflags=creationflags,
+        )
+        return "gateway command launched in background"
 
     def run_text(
         self,
@@ -67,25 +78,7 @@ class HermesCLI:
         timeout: int = 60,
     ) -> str:
         if os.name == "nt" and self._is_gateway_spawn_command(command):
-            # Do not use PIPE for Windows gateway start/restart. The persistent
-            # grandchild may inherit a pipe writer and keep communicate() open
-            # after the short-lived CLI exits. File-backed capture waits only
-            # for the direct command process and remains readable afterwards.
-            with tempfile.TemporaryFile(mode="w+b") as stdout_file, tempfile.TemporaryFile(mode="w+b") as stderr_file:
-                proc = subprocess.run(
-                    command,
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    timeout=timeout,
-                    env=env,
-                    check=False,
-                )
-                stdout = self._decode_capture(stdout_file)
-                stderr = self._decode_capture(stderr_file)
-            if proc.returncode != 0:
-                detail = (stderr or stdout or "Hermes command failed").strip()
-                raise RuntimeError(f"{detail} (exit {proc.returncode})")
-            return stdout
+            return self._launch_gateway_spawn_command(command, env=env)
 
         proc = subprocess.run(
             command,
@@ -117,12 +110,7 @@ class HermesCLI:
 
 
 def install_hermes_cli_compat() -> None:
-    """Expose the Control Center subprocess adapter on Hermes' package.
-
-    Service modules historically use ``from hermes_cli import HermesCLI``.
-    The official package intentionally does not define that symbol, so install
-    it before any Management/Task service is imported.
-    """
+    """Expose the Control Center subprocess adapter on Hermes' package."""
     import hermes_cli as official_hermes_cli
 
     if getattr(official_hermes_cli, "HermesCLI", None) is None:
