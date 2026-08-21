@@ -94,6 +94,15 @@ def test_dirty_edits_block_refreshing_lifecycle_actions() -> None:
     assert "Boolean(busy) || agentDirty" in CORE_JS
 
 
+def test_agent_dialog_surfaces_errors_and_loads_provider_fallbacks() -> None:
+    assert '"aria-live": "assertive"' in CORE_JS
+    assert 'h("strong", null, "Action failed: ")' in CORE_JS
+    assert 'request("/providers?profile=default")' in CORE_JS
+    assert "mergeProviderData(profileProviders, defaultProviders)" in CORE_JS
+    assert "provider.runtime_provider_id || provider.id" in CORE_JS
+    assert "Provider/Model choices could not be loaded" in CORE_JS
+
+
 def test_resource_selector_preserves_browser_choice_and_hides_offline_rows() -> None:
     assert "managed:chrome" in RESOURCE_JS
     assert "managed:edge" in RESOURCE_JS

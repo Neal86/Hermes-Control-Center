@@ -31,6 +31,32 @@
     return { name: t.name || "", prompt: t.prompt || t.body || "", profile: t.profile || "", schedule: t.type === "cron" ? (t.schedule || "") : "", priority: t.type === "kanban" ? Number(t.priority == null ? 50 : t.priority) : null };
   }
 
+  function providerValue(provider) {
+    if (!provider) return "";
+    return String(provider.runtime_provider_id || provider.id || "").trim();
+  }
+
+  function mergeProviderData(primary, fallback) {
+    const sources = [fallback, primary].filter(Boolean);
+    if (!sources.length) return null;
+    const items = [];
+    const positions = {};
+    sources.forEach(function (source) {
+      ((source && source.items) || []).forEach(function (provider) {
+        const value = providerValue(provider);
+        if (!value) return;
+        const next = Object.assign({}, provider);
+        if (positions[value] == null) {
+          positions[value] = items.length;
+          items.push(next);
+        } else {
+          items[positions[value]] = Object.assign({}, items[positions[value]], next);
+        }
+      });
+    });
+    return { items: items };
+  }
+
   function ManagementApp() {
     const prefs = useMemo(loadPrefs, []);
     const [tab, setTab] = useState(HX.TABS.indexOf(prefs.tab) >= 0 ? prefs.tab : "overview");
@@ -265,13 +291,16 @@
         const results = await Promise.allSettled([
           request("/agents/" + encodeURIComponent(name)),
           request("/resources?refresh=true"),
-          request("/providers?profile=" + encodeURIComponent(name))
+          request("/providers?profile=" + encodeURIComponent(name)),
+          name === "default" ? Promise.resolve(null) : request("/providers?profile=default")
         ]);
         if (results[0].status !== "fulfilled") throw results[0].reason;
         const data = results[0].value;
         setAgentDetail(data);
         setAgentOriginal(agentEditable(data));
-        setAgentProviderData(results[2].status === "fulfilled" ? results[2].value : null);
+        const profileProviders = results[2].status === "fulfilled" ? results[2].value : null;
+        const defaultProviders = results[3].status === "fulfilled" ? results[3].value : null;
+        setAgentProviderData(mergeProviderData(profileProviders, defaultProviders));
         if (results[1].status === "fulfilled") {
           const resources = (results[1].value && results[1].value.items) || [];
           setAvailableResources(resources);
@@ -280,6 +309,9 @@
           setAvailableResources([]);
           setAgentResources([]);
           setError("Agent loaded, but bound resources could not be loaded: " + errText(results[1].reason));
+        }
+        if (!profileProviders && !defaultProviders) {
+          setError("Agent loaded, but Provider/Model choices could not be loaded: " + errText(results[2].reason));
         }
         setTab("agents");
       } catch (e) {
@@ -707,15 +739,16 @@
       const running = String(a.gateway || "").toLowerCase().startsWith("running");
       const workspaceOptions = Array.from(new Set([a.workspace || ".", "."].concat(projects.flatMap(function (p) { return [p.primary_path, p.slug].filter(Boolean); }))));
       const providerItems = (agentProviderData && agentProviderData.items) || [];
-      const providerOptions = Array.from(new Set([a.provider].concat(providerItems.map(function (p) { return p.id; })).filter(Boolean)));
-      const activeProvider = providerItems.find(function (p) { return p.id === a.provider; });
+      const providerOptions = Array.from(new Set([a.provider].concat(providerItems.map(providerValue)).filter(Boolean)));
+      const activeProvider = providerItems.find(function (p) { return providerValue(p) === a.provider || p.id === a.provider; });
       const modelOptions = Array.from(new Set([a.model].concat(activeProvider && Array.isArray(activeProvider.models) ? activeProvider.models : []).filter(Boolean)));
       return h(Dialog, { open: true, title: "Agent · " + (a.display_name || a.name), subtitle: agentDirty ? "Unsaved changes" : "Native Hermes Profile", locked: Boolean(busy), onRequestClose: function () { guardedClose(agentDirty, function () { setAgentDetail(null); setAgentOriginal(null); setAgentResources([]); }); } },
         h("form", { className: "hx-form", onSubmit: saveAgent },
+          error ? h("div", { className: "hx-toast hx-error hx-span-2", role: "alert", "aria-live": "assertive" }, h("span", null, h("strong", null, "Action failed: "), error), h("button", { type: "button", onClick: function () { setError(""); }, "aria-label": "Dismiss error" }, "×")) : null,
           Field("Profile name", h("input", { value: a.edit_name == null ? a.name : a.edit_name, disabled: a.name === "default", onChange: function (e) { setAgentDetail(Object.assign({}, a, { edit_name: e.target.value })); } })),
           Field("Description / role", h("textarea", { rows: 3, value: a.description || "", onChange: function (e) { setAgentDetail(Object.assign({}, a, { description: e.target.value })); } })),
           Field("Workspace", h("select", { value: a.workspace || ".", onChange: function (e) { setAgentDetail(Object.assign({}, a, { workspace: e.target.value })); } }, workspaceOptions.map(function (value) { return h("option", { key: value, value: value }, value === "." ? "Default workspace (.)" : value); }))),
-          Field("Provider", h("select", { value: a.provider || "", onChange: function (e) { const nextProvider = providerItems.find(function (p) { return p.id === e.target.value; }); const models = nextProvider && Array.isArray(nextProvider.models) ? nextProvider.models : []; const nextModel = nextProvider && nextProvider.default_model ? nextProvider.default_model : (models[0] || ""); setAgentDetail(Object.assign({}, a, { provider: e.target.value, model: nextModel })); } }, providerOptions.length ? providerOptions.map(function (value) { const item = providerItems.find(function (p) { return p.id === value; }); return h("option", { key: value, value: value }, item && (item.custom_name || item.name) ? (item.custom_name || item.name) : value); }) : h("option", { value: a.provider || "" }, a.provider || "No configured providers"))),
+          Field("Provider", h("select", { value: a.provider || "", onChange: function (e) { const nextProvider = providerItems.find(function (p) { return providerValue(p) === e.target.value || p.id === e.target.value; }); const models = nextProvider && Array.isArray(nextProvider.models) ? nextProvider.models : []; const nextModel = nextProvider && nextProvider.default_model ? nextProvider.default_model : (models[0] || ""); setAgentDetail(Object.assign({}, a, { provider: e.target.value, model: nextModel })); } }, providerOptions.length ? providerOptions.map(function (value) { const item = providerItems.find(function (p) { return providerValue(p) === value || p.id === value; }); return h("option", { key: value, value: value }, item && (item.custom_name || item.label || item.name) ? (item.custom_name || item.label || item.name) : value); }) : h("option", { value: a.provider || "" }, a.provider || "No configured providers"))),
           Field("Model", h("select", { value: a.model || "", onChange: function (e) { setAgentDetail(Object.assign({}, a, { model: e.target.value })); } }, modelOptions.length ? modelOptions.map(function (value) { return h("option", { key: value, value: value }, value); }) : h("option", { value: "" }, "No saved models"))),
           Field("Gateway", h("input", { value: a.gateway || "unknown", readOnly: true })),
           Field("SOUL.md", h("textarea", { rows: 12, value: a.soul || "", onChange: function (e) { setAgentDetail(Object.assign({}, a, { soul: e.target.value })); } })),
