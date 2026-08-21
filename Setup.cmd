@@ -11,16 +11,13 @@ if not "%ERRORLEVEL%"=="0" (
   exit /b %ERRORLEVEL%
 )
 
-rem IMPORTANT: do not start Live-Log-Tail.ps1 with `start /b` here.
-rem A background PowerShell sharing this console also inherits the console input
-rem handle and can race with Read-Host in Setup-Loop-v7.ps1. That caused the
-rem menu to receive an empty choice immediately after Dashboard launch and then
-rem treat the user's `5` as input for the following pause prompt.
-rem Setup-Loop already prints each operation log itself when HCC_LIVE_LOG_TAIL
-rem is not set, so keep the interactive console single-owner and deterministic.
+rem Keep the interactive console single-owner. Live-Log-Tail.ps1 previously
+rem inherited this console input handle and could consume Read-Host keystrokes.
 set "HCC_LIVE_LOG_TAIL="
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Setup-Loop-v7.ps1"
+set "SETUP_LOOP=%~dp0Setup-Loop-v8.ps1"
+if not exist "%SETUP_LOOP%" set "SETUP_LOOP=%~dp0Setup-Loop-v7.ps1"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SETUP_LOOP%"
 set "EXITCODE=%ERRORLEVEL%"
 echo.
 if not "%EXITCODE%"=="0" (
