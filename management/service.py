@@ -168,6 +168,7 @@ class ManagementCenter:
             "env_exists": (home / ".env").exists(),
             "soul_exists": soul_path.exists(),
             "gateway": "unknown",
+            "gateway_managed_by": None,
             "status_error": None,
         }
 
@@ -183,7 +184,11 @@ class ManagementCenter:
         except Exception as exc:
             errors.append(str(exc))
         try:
-            row["gateway"] = self._normalized_gateway_state(profile)
+            if profile != "default" and self._gateway_multiplexes_profiles() and self._normalized_gateway_state("default") == "running":
+                row["gateway"] = "running (multiplexed)"
+                row["gateway_managed_by"] = "default"
+            else:
+                row["gateway"] = self._normalized_gateway_state(profile)
         except Exception as exc:
             errors.append(str(exc))
             row["gateway"] = "error"
@@ -316,6 +321,10 @@ class ManagementCenter:
             return "error"
         return "unknown"
 
+    def _gateway_multiplexes_profiles(self) -> bool:
+        config = _safe_yaml(self.root / "config.yaml")
+        return bool(_nested(config, "gateway", "multiplex_profiles"))
+
     def _verify_gateway_transition(self, profile: str, expected_running: bool, timeout: float = 12.0) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
         last = "unknown"
@@ -335,6 +344,19 @@ class ManagementCenter:
             output = self.cli.run_text([self.hermes, "profile", "use", profile])
             return {"ok": True, "action": action, "output": output, "agent": self.agent_get(profile)}
         if action in {"gateway_start", "gateway_stop", "gateway_restart", "gateway_status"}:
+            requested_profile = profile
+            if profile != "default" and self._gateway_multiplexes_profiles():
+                default_state = self._normalized_gateway_state("default")
+                if action == "gateway_status" or (action == "gateway_start" and default_state == "running"):
+                    return {
+                        "ok": True,
+                        "action": action,
+                        "output": "Profile is served by the default gateway multiplexer.",
+                        "agent": self.agent_get(profile),
+                    }
+                if action == "gateway_stop":
+                    raise ValueError("This profile is served by the default gateway multiplexer and cannot be stopped independently.")
+                profile = "default"
             verb = action.split("_", 1)[1]
             output = self.cli.run_text(
                 self._profile_cli(profile, "gateway", verb),
@@ -342,7 +364,7 @@ class ManagementCenter:
                 timeout=90,
             )
             if action == "gateway_status":
-                return {"ok": True, "action": action, "output": output, "agent": self.agent_get(profile)}
+                return {"ok": True, "action": action, "output": output, "agent": self.agent_get(requested_profile)}
             transition = self._verify_gateway_transition(profile, expected_running=action != "gateway_stop")
             if not transition["verified"]:
                 return {
@@ -351,9 +373,9 @@ class ManagementCenter:
                     "output": output,
                     "warning": "command succeeded but gateway state could not be verified",
                     "gateway_state": transition["state"],
-                    "agent": self.agent_get(profile),
+                    "agent": self.agent_get(requested_profile),
                 }
-            return {"ok": True, "action": action, "output": output, "gateway_state": transition["state"], "agent": self.agent_get(profile)}
+            return {"ok": True, "action": action, "output": output, "gateway_state": transition["state"], "agent": self.agent_get(requested_profile)}
         if action == "set_workspace":
             if not value:
                 raise ValueError("set_workspace requires value")

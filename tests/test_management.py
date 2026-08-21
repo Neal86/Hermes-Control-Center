@@ -58,6 +58,43 @@ def test_agent_gateway_status_is_probed_directly(tmp_path: Path) -> None:
     assert agent["status_error"] is None
 
 
+def test_named_profile_is_running_when_default_gateway_multiplexes(tmp_path: Path) -> None:
+    write_profile(tmp_path)
+    write_profile(tmp_path / "profiles" / "support")
+    (tmp_path / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n", "utf-8")
+
+    def fake(command, **kwargs):
+        if command[-2:] == ["gateway", "status"] and "-p" not in command:
+            return "Gateway process running"
+        if command[-2:] == ["gateway", "status"]:
+            return "Gateway is not running"
+        return ""
+
+    center = center_with_cli(tmp_path, fake)
+    agent = center.agent_get("support")
+    assert agent["gateway"] == "running (multiplexed)"
+    assert agent["gateway_managed_by"] == "default"
+
+
+def test_multiplexed_profile_start_is_already_satisfied(tmp_path: Path) -> None:
+    write_profile(tmp_path)
+    write_profile(tmp_path / "profiles" / "support")
+    (tmp_path / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n", "utf-8")
+    calls: list[list[str]] = []
+
+    def fake(command, **kwargs):
+        calls.append(command)
+        if command[-2:] == ["gateway", "status"] and "-p" not in command:
+            return "Gateway process running"
+        return ""
+
+    center = center_with_cli(tmp_path, fake)
+    result = center.agent_action("support", "gateway_start")
+    assert result["ok"] is True
+    assert result["agent"]["gateway"] == "running (multiplexed)"
+    assert not any(command[-2:] == ["gateway", "start"] for command in calls)
+
+
 def test_profile_commands_keep_hermes_home_at_root(tmp_path: Path) -> None:
     write_profile(tmp_path)
     write_profile(tmp_path / "profiles" / "support")

@@ -691,6 +691,7 @@
         h("div", { className: "hx-toolbar" }, h(SearchBox, { value: agentSearch, onChange: setAgentSearch, placeholder: "Search name, role, workspace, model…" }), h("span", { className: "hx-muted" }, filteredAgents.length + " of " + agents.length)),
         filteredAgents.length ? h("div", { className: "hx-agent-grid" }, filteredAgents.map(function (a) {
           const running = String(a.gateway || "").toLowerCase().startsWith("running");
+          const multiplexed = Boolean(a.gateway_managed_by);
           const actionKey = "agent:" + a.name + ":" + (running ? "gateway_stop" : "gateway_start");
           return h(Card, { key: a.name },
             h("div", { className: "hx-agent-head" }, h("div", null, h("h2", null, a.display_name || a.name), h("div", { className: "hx-muted" }, a.name)), a.is_default ? h(Pill, { kind: "ok" }, "default") : h(Pill, { kind: running ? "ok" : "paused" }, a.gateway || "stopped")),
@@ -699,8 +700,8 @@
             h("div", { className: "hx-actions" },
               h("button", { className: "hx-button secondary", type: "button", disabled: Boolean(busy), onClick: function () { openAgent(a.name); } }, "Manage"),
               !a.is_default ? h("button", { className: "hx-button secondary", type: "button", disabled: Boolean(busy), onClick: function () { agentAction(a, "use", null, "Default Agent changed."); } }, "Set default") : null,
-              h("button", { className: "hx-button secondary", type: "button", disabled: Boolean(busy), onClick: function () { agentAction(a, running ? "gateway_stop" : "gateway_start", null, running ? "Gateway stopped." : "Gateway started."); } }, busyIs(actionKey) ? "Working…" : running ? "Stop" : "Start"),
-              running ? h("button", { className: "hx-button secondary", type: "button", disabled: Boolean(busy), onClick: function () { restartAgent(a); } }, "Restart") : null
+              multiplexed ? null : h("button", { className: "hx-button secondary", type: "button", disabled: Boolean(busy), onClick: function () { agentAction(a, running ? "gateway_stop" : "gateway_start", null, running ? "Gateway stopped." : "Gateway started."); } }, busyIs(actionKey) ? "Working…" : running ? "Stop" : "Start"),
+              running ? h("button", { className: "hx-button secondary", type: "button", disabled: Boolean(busy), onClick: function () { restartAgent(a); } }, multiplexed ? "Restart shared gateway" : "Restart") : null
             )
           );
         })) : h(Card, null, h(Empty, null, "No Agents match this view."))
@@ -773,7 +774,7 @@
           h("div", { className: "hx-actions hx-span-2" },
             h("button", { className: "hx-button", type: "submit", disabled: busyIs("agent-save") || !agentDirty }, busyIs("agent-save") ? "Saving…" : "Save"),
             h("button", { className: "hx-button secondary", type: "button", disabled: Boolean(busy) || agentDirty, onClick: function () { agentAction(a, "gateway_status", null, "Gateway status refreshed."); } }, "Check gateway"),
-            h("button", { className: "hx-button secondary", type: "button", disabled: Boolean(busy) || agentDirty, onClick: function () { agentAction(a, running ? "gateway_stop" : "gateway_start", null, running ? "Gateway stopped." : "Gateway started."); } }, running ? "Stop" : "Start"),
+            a.gateway_managed_by ? null : h("button", { className: "hx-button secondary", type: "button", disabled: Boolean(busy) || agentDirty, onClick: function () { agentAction(a, running ? "gateway_stop" : "gateway_start", null, running ? "Gateway stopped." : "Gateway started."); } }, running ? "Stop" : "Start"),
             running ? h("button", { className: "hx-button secondary", type: "button", disabled: Boolean(busy) || agentDirty, onClick: function () { restartAgent(a); } }, "Restart") : null,
             h("button", { className: "hx-button secondary", type: "button", disabled: Boolean(busy) || agentDirty, onClick: function () { agentAction(a, "export", null, "Agent exported."); } }, "Export"),
             a.name !== "default" ? h("button", { className: "hx-button danger", type: "button", disabled: Boolean(busy) || agentDirty, onClick: function () { deleteAgent(a); } }, "Delete") : null
