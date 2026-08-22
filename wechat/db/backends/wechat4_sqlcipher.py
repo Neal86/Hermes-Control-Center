@@ -471,7 +471,9 @@ class WeChat4SqlcipherBackend(ReceiverBackend):
             source_lower = source.lower()
             mentioned = bool(self.wxid and self.wxid.lower() in source_lower and "atuser" in source_lower)
             if not mentioned and "@" in content:
-                mentioned = any(str(name or "").strip() and str(name).strip() in content for name in mention_names)
+                candidates = {str(name or "").strip() for name in mention_names}
+                candidates.add(str(self._contact_names.get(self.wxid, "") or "").strip())
+                mentioned = any(name and f"@{name}" in content for name in candidates)
         server_id = int(row.get("server_id") or 0)
         local_id = int(row.get("local_id") or 0)
         sort_seq = int(row.get("sort_seq") or 0)
