@@ -28,3 +28,16 @@ def test_installer_staging_validation_covers_gateway_and_wechat_domains() -> Non
         '"hcc_gateway\\routing.py"',
     ):
         assert INSTALLER.count(required) >= 2, required
+
+
+def test_installer_refreshes_and_reloads_running_control_center_runtime() -> None:
+    for required in (
+        "Refresh-IsolatedProfileRuntime",
+        "_persist_independent_gateway_config",
+        "_sync_enabled_user_plugins",
+        "Get-RunningGatewayProfiles",
+        "Get-RunningDashboardPort",
+        "gateway restart",
+        "dashboard --stop",
+    ):
+        assert required in INSTALLER, required

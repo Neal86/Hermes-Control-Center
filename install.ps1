@@ -19,6 +19,85 @@ $LegacyNestedPlatformTarget = Join-Path $PluginsRoot "platforms\wechat-desktop"
 $Requirements = Join-Path $Source "requirements-windows.txt"
 $HermesCommand = Get-Command hermes -ErrorAction SilentlyContinue
 
+function Get-RunningGatewayProfiles {
+    $running = New-Object System.Collections.Generic.List[string]
+    $candidates = @(@{ Name = "default"; Pid = (Join-Path $HermesHome "gateway.pid") })
+    $profilesRoot = Join-Path $HermesHome "profiles"
+    if (Test-Path -LiteralPath $profilesRoot) {
+        Get-ChildItem -LiteralPath $profilesRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $candidates += @{ Name = $_.Name; Pid = (Join-Path $_.FullName "gateway.pid") }
+        }
+    }
+    foreach ($candidate in $candidates) {
+        if (-not (Test-Path -LiteralPath $candidate.Pid)) { continue }
+        try {
+            $pidValue = [int]((Get-Content -LiteralPath $candidate.Pid -Raw -ErrorAction Stop).Trim())
+            if ($pidValue -gt 0 -and (Get-Process -Id $pidValue -ErrorAction SilentlyContinue)) {
+                if (-not $running.Contains([string]$candidate.Name)) { $running.Add([string]$candidate.Name) }
+            }
+        } catch {}
+    }
+    return @($running)
+}
+
+function Get-RunningDashboardPort {
+    try {
+        $home = $HermesHome.ToLowerInvariant()
+        foreach ($proc in Get-CimInstance Win32_Process -ErrorAction Stop) {
+            $cmd = [string]$proc.CommandLine
+            $combined = (([string]$proc.ExecutablePath) + " " + $cmd).ToLowerInvariant()
+            if (-not $combined.Contains($home) -or -not $combined.Contains("dashboard") -or -not $combined.Contains("hermes")) { continue }
+            if ($cmd -match '(?i)--port\s+(\d+)') { return [int]$Matches[1] }
+            return 9119
+        }
+    } catch {}
+    return 0
+}
+
+function Refresh-IsolatedProfileRuntime {
+    param([string]$PythonExe, [string]$TempRoot)
+    $helper = Join-Path $TempRoot "refresh-isolated-runtime.py"
+    @'
+from __future__ import annotations
+import importlib.util, sys
+from pathlib import Path
+root = Path(sys.argv[1]).expanduser().resolve()
+path = root / "plugins" / "hermes-extensions" / "hcc_gateway" / "lifecycle.py"
+spec = importlib.util.spec_from_file_location("hcc_installer_gateway_lifecycle", path)
+if spec is None or spec.loader is None:
+    raise SystemExit(f"Unable to load {path}")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module._persist_independent_gateway_config(root)
+profiles = root / "profiles"
+if profiles.is_dir():
+    for profile in sorted((item for item in profiles.iterdir() if item.is_dir()), key=lambda item: item.name.lower()):
+        module._sync_enabled_user_plugins(root, profile)
+print("Independent Gateway runtime state refreshed.")
+'@ | Set-Content -LiteralPath $helper -Encoding UTF8
+    $output = & $PythonExe $helper $HermesHome 2>&1
+    $exitCode = $LASTEXITCODE
+    $output | ForEach-Object { Write-Host ([string]$_) }
+    if ($exitCode -ne 0) { throw "Independent Gateway runtime refresh failed (exit code $exitCode)." }
+}
+
+function Restart-PreviouslyRunningRuntime {
+    param([string[]]$GatewayProfiles, [int]$DashboardPort)
+    if (-not $HermesCommand) { return }
+    foreach ($profile in $GatewayProfiles) {
+        Write-Stage ("Reloading Gateway runtime for profile " + $profile)
+        if ($profile -eq "default") { & $HermesCommand.Source gateway restart | Out-Host }
+        else { & $HermesCommand.Source -p $profile gateway restart | Out-Host }
+        if ($LASTEXITCODE -ne 0) { throw "Gateway restart failed for profile '$profile'." }
+    }
+    if ($DashboardPort -gt 0) {
+        Write-Stage ("Reloading Dashboard runtime on port " + $DashboardPort)
+        try { & $HermesCommand.Source dashboard --stop 2>&1 | Out-Host } catch {}
+        Start-Sleep -Milliseconds 700
+        Start-Process -FilePath $HermesCommand.Source -ArgumentList @("dashboard","--skip-build","--no-open","--host","127.0.0.1","--port",[string]$DashboardPort) -WindowStyle Hidden | Out-Null
+    }
+}
+
 function Write-Stage { param([string]$Message) Write-Host ("  -> " + $Message) -ForegroundColor Cyan }
 function Read-PluginVersion {
     param([string]$ManifestPath)
@@ -195,6 +274,8 @@ if (-not $SkipDependencies) {
     if (-not $installed) { throw "Unable to install Control Center dependencies into Hermes Python." }
 }
 $PluginVersion = Read-PluginVersion (Join-Path $Source "plugin.yaml")
+$RunningGatewayProfiles = @(Get-RunningGatewayProfiles)
+$RunningDashboardPort = Get-RunningDashboardPort
 New-Item -ItemType Directory -Force -Path $PluginsRoot | Out-Null
 $TxnRoot = Join-Path $env:TEMP ("hermes-control-center-txn-" + [Guid]::NewGuid().ToString("N"))
 $StagePlugin = Join-Path $TxnRoot "hermes-extensions"
@@ -241,6 +322,9 @@ try {
     if (-not $NoEnable) { Write-Stage "Cleaning stale plugin enable entries and enabling current plugins"; Enable-ControlCenterPlugins -PythonExe $HermesPython -TempRoot $TxnRoot -ConfigFile $ConfigPath }
     else { Write-Stage "Plugin enable deferred by -NoEnable" }
     if (-not $NoEnable) { Write-Stage "Running installed doctor"; & (Join-Path $Target "doctor.ps1") -Installed; if ($LASTEXITCODE -ne 0) { throw "Installed doctor verification failed with exit code $LASTEXITCODE." } }
+    Write-Stage "Refreshing independent Gateway profile runtime"
+    Refresh-IsolatedProfileRuntime -PythonExe $HermesPython -TempRoot $TxnRoot
+    Restart-PreviouslyRunningRuntime -GatewayProfiles $RunningGatewayProfiles -DashboardPort $RunningDashboardPort
     Write-Host "Hermes Control Center v$PluginVersion install complete." -ForegroundColor Green
 } catch {
     Write-Warning "Installation failed; restoring previous Control Center files."
