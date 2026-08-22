@@ -97,6 +97,14 @@ class WeChatBindingService:
                 raise direct_error
 
         ownership = self.bindings.list()
+        old_runtime = str(record.get("runtime_resource_id") or "")
+        # If the compatibility binding was explicitly removed, that is an unbind,
+        # not a restart. Never resurrect a deliberately removed relationship.
+        if not old_runtime or ownership.get(old_runtime) != agent:
+            records.pop(key, None)
+            self._write(records)
+            raise direct_error
+
         live = [
             row
             for row in self.bindings.registry.list(refresh=True)
@@ -118,7 +126,6 @@ class WeChatBindingService:
             )
 
         replacement = live[0]
-        old_runtime = str(record.get("runtime_resource_id") or "")
         result = self.bindings.bind(str(replacement["id"]), agent)
         remembered = self._remember(agent, result["resource"])
         return dict(
