@@ -115,11 +115,13 @@ class WeChatBindingService:
 
     def require(self, agent: str, *, ready: bool = True) -> dict[str, Any]:
         agent = normalize_agent(agent)
+        failure: ResourceAccessError | None = None
         try:
             resource = self.bindings.require(agent, "wechat", ready=ready)
             self._remember(agent, resource)
             return resource
-        except ResourceAccessError as direct_error:
+        except ResourceAccessError as exc:
+            failure = exc
             records = self._read()
             key = stable_binding_id(agent)
             ownership = self.bindings.list()
@@ -130,7 +132,7 @@ class WeChatBindingService:
                 # bindings or missing metadata remain fail-closed.
                 record = self._legacy_record(agent, ownership)
                 if not record:
-                    raise direct_error
+                    raise
                 records[key] = record
                 self._write(records)
 
@@ -140,7 +142,9 @@ class WeChatBindingService:
         if not old_runtime or ownership.get(old_runtime) != agent:
             records.pop(key, None)
             self._write(records)
-            raise direct_error
+            if failure is not None:
+                raise failure
+            raise ResourceAccessError(f"Agent '{agent}' has no bound wechat resource")
 
         live = [
             row
