@@ -330,7 +330,18 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
             return
 
         echo = outbound_fingerprint(text)
-        if self._is_recent(self._recent_outbound.get(chat), echo, now, legacy.OUTBOUND_ECHO_SECONDS):
+        in_memory_echo = self._is_recent(
+            self._recent_outbound.get(chat),
+            echo,
+            now,
+            legacy.OUTBOUND_ECHO_SECONDS,
+        )
+        persistent_echo = self.receiver_state.recent_outbound(
+            chat,
+            echo,
+            legacy.OUTBOUND_ECHO_SECONDS,
+        )
+        if in_memory_echo or persistent_echo:
             self.receiver_state.commit_message(chat, fingerprint)
             self._commit_preview(chat, preview)
             self._decision_log(
@@ -443,12 +454,14 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
         metadata: dict | None = None,
     ):
         del reply_to, metadata
+        chat = str(chat_id or "").strip()
         try:
-            result = await asyncio.to_thread(self.sender.send, chat_id, content)
+            result = await asyncio.to_thread(self.sender.send, chat, content)
         except Exception as exc:
             return legacy.SendResult(success=False, error=str(exc))
         now = time.monotonic()
-        self._recent_outbound[str(chat_id).strip()] = (result["fingerprint"], now)
+        self._recent_outbound[chat] = (result["fingerprint"], now)
+        self.receiver_state.remember_outbound(chat, result["fingerprint"])
         self._prune_dedup(now)
         return legacy.SendResult(success=True, message_id=result["message_id"])
 
