@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from resources.bindings import ResourceBindings
+try:  # plugin package import
+    from ..resources.bindings import ResourceBindings
+except (ImportError, ValueError):  # source/platform import
+    from resources.bindings import ResourceBindings
 
 
 class BrowserBindingService:
