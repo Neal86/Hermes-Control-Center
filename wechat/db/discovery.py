@@ -28,15 +28,44 @@ def pid_from_hwnd(hwnd: int) -> int:
     return int(pid.value)
 
 
-def _process(pid: int):
+def _native_executable(pid: int) -> str:
+    """Resolve the bound process executable using Windows itself.
+
+    psutil remains an optional enhancement for command-line discovery, but the
+    DB receiver must not depend on it: Hermes-managed runtimes intentionally
+    keep a small dependency surface.
+    """
+    if os.name != "nt":
+        raise BackendUnavailable("Windows WeChat process discovery requires Windows")
+    import ctypes
+    import ctypes.wintypes as wt
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wt.HANDLE
+    handle = kernel32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        raise BackendUnavailable(f"Unable to inspect WeChat process {pid}")
+    try:
+        capacity = wt.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(capacity.value)
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(capacity)):
+            raise BackendUnavailable(f"Unable to resolve WeChat executable for process {pid}")
+        return buffer.value
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _process_metadata(pid: int) -> tuple[str, list[str]]:
+    """Use psutil when present, otherwise return dependency-free metadata."""
     try:
         import psutil
-    except ImportError as exc:
-        raise BackendUnavailable("psutil is required for automatic WeChat process discovery") from exc
+    except ImportError:
+        return _native_executable(pid), []
     try:
-        return psutil.Process(pid)
-    except Exception as exc:
-        raise BackendUnavailable(f"Unable to inspect WeChat process {pid}: {exc}") from exc
+        proc = psutil.Process(pid)
+        return proc.exe(), proc.cmdline()
+    except Exception:
+        return _native_executable(pid), []
 
 
 def _version_from_executable(path: str, cmdline: list[str]) -> str:
@@ -68,12 +97,7 @@ def _data_root_from_cmdline(cmdline: list[str]) -> Path | None:
 
 def discover_process(hwnd: int) -> WeChatProcessInfo:
     pid = pid_from_hwnd(hwnd)
-    proc = _process(pid)
-    try:
-        executable = proc.exe()
-        cmdline = proc.cmdline()
-    except Exception as exc:
-        raise BackendUnavailable(f"Unable to inspect WeChat process metadata: {exc}") from exc
+    executable, cmdline = _process_metadata(pid)
     data_root = _data_root_from_cmdline(cmdline)
     if data_root is None:
         candidates = [Path.home() / "Documents" / "xwechat_files", Path.home() / "Documents" / "WeChat Files"]

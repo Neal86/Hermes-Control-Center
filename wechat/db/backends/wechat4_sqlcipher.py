@@ -175,15 +175,76 @@ def _verify_key(db_path: Path, key: bytes) -> bool:
         return False
 
 
-def _aes_decrypt(key: bytes, page: bytes, page_no: int) -> bytes:
+def _native_aes_cbc_decrypt(key: bytes, encrypted: bytes, iv: bytes) -> bytes:
+    """AES-CBC through Windows CNG so the Hermes runtime needs no crypto wheel."""
+    if os.name != "nt":
+        raise BackendUnavailable("Native WeChat DB decryption requires Windows")
+    bcrypt = ctypes.WinDLL("bcrypt", use_last_error=True)
+    ulong = wt.ULONG
+    handle_t = ctypes.c_void_p
+    bcrypt.BCryptOpenAlgorithmProvider.argtypes = [ctypes.POINTER(handle_t), ctypes.c_wchar_p, ctypes.c_wchar_p, ulong]
+    bcrypt.BCryptSetProperty.argtypes = [handle_t, ctypes.c_wchar_p, ctypes.c_void_p, ulong, ulong]
+    bcrypt.BCryptGetProperty.argtypes = [handle_t, ctypes.c_wchar_p, ctypes.c_void_p, ulong, ctypes.POINTER(ulong), ulong]
+    bcrypt.BCryptGenerateSymmetricKey.argtypes = [handle_t, ctypes.POINTER(handle_t), ctypes.c_void_p, ulong, ctypes.c_void_p, ulong, ulong]
+    bcrypt.BCryptDecrypt.argtypes = [handle_t, ctypes.c_void_p, ulong, ctypes.c_void_p, ctypes.c_void_p, ulong, ctypes.c_void_p, ulong, ctypes.POINTER(ulong), ulong]
+    bcrypt.BCryptDestroyKey.argtypes = [handle_t]
+    bcrypt.BCryptCloseAlgorithmProvider.argtypes = [handle_t, ulong]
+
+    algorithm = handle_t()
+    key_handle = handle_t()
+    key_object = None
     try:
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    except ImportError as exc:
-        raise BackendUnavailable("Hermes runtime is missing cryptography support") from exc
+        status = bcrypt.BCryptOpenAlgorithmProvider(ctypes.byref(algorithm), "AES", None, 0)
+        if status != 0:
+            raise BackendUnavailable(f"Windows AES provider failed: 0x{int(status) & 0xFFFFFFFF:08x}")
+        chaining = ctypes.create_unicode_buffer("ChainingModeCBC")
+        status = bcrypt.BCryptSetProperty(
+            algorithm, "ChainingMode", ctypes.cast(chaining, ctypes.c_void_p), ctypes.sizeof(chaining), 0
+        )
+        if status != 0:
+            raise BackendUnavailable(f"Windows AES CBC setup failed: 0x{int(status) & 0xFFFFFFFF:08x}")
+        object_length = ulong()
+        received = ulong()
+        status = bcrypt.BCryptGetProperty(
+            algorithm, "ObjectLength", ctypes.byref(object_length), ctypes.sizeof(object_length), ctypes.byref(received), 0
+        )
+        if status != 0 or not object_length.value:
+            raise BackendUnavailable("Windows AES key-object discovery failed")
+        key_object = ctypes.create_string_buffer(object_length.value)
+        key_bytes = ctypes.create_string_buffer(key, len(key))
+        status = bcrypt.BCryptGenerateSymmetricKey(
+            algorithm, ctypes.byref(key_handle), key_object, object_length.value, key_bytes, len(key), 0
+        )
+        if status != 0:
+            raise BackendUnavailable(f"Windows AES key setup failed: 0x{int(status) & 0xFFFFFFFF:08x}")
+        source = ctypes.create_string_buffer(encrypted, len(encrypted))
+        iv_buffer = ctypes.create_string_buffer(iv, len(iv))
+        output = ctypes.create_string_buffer(len(encrypted))
+        output_length = ulong()
+        status = bcrypt.BCryptDecrypt(
+            key_handle, source, len(encrypted), None, iv_buffer, len(iv),
+            output, len(encrypted), ctypes.byref(output_length), 0,
+        )
+        if status != 0 or output_length.value != len(encrypted):
+            raise BackendUnavailable(f"Windows AES decrypt failed: 0x{int(status) & 0xFFFFFFFF:08x}")
+        return output.raw[: output_length.value]
+    finally:
+        if key_handle:
+            bcrypt.BCryptDestroyKey(key_handle)
+        if algorithm:
+            bcrypt.BCryptCloseAlgorithmProvider(algorithm, 0)
+
+
+def _aes_decrypt(key: bytes, page: bytes, page_no: int) -> bytes:
     iv = page[_PAGE_SIZE - _RESERVE_SIZE : _PAGE_SIZE - _RESERVE_SIZE + 16]
     encrypted = page[16 : _PAGE_SIZE - _RESERVE_SIZE] if page_no == 1 else page[: _PAGE_SIZE - _RESERVE_SIZE]
-    decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
-    plain = decryptor.update(encrypted) + decryptor.finalize()
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    except ImportError:
+        plain = _native_aes_cbc_decrypt(key, encrypted, iv)
+    else:
+        decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+        plain = decryptor.update(encrypted) + decryptor.finalize()
     if page_no == 1:
         plain = b"SQLite format 3\x00" + plain
     return plain + bytes(_RESERVE_SIZE)
