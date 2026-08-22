@@ -9,6 +9,7 @@ import pytest
 from wechat.db.account_matcher import match_account
 from wechat.db.base import BackendStatus, BackendUnavailable
 from wechat.db.schema_probe import probe_sqlite
+from wechat.db.backends.wechat4_sqlcipher import _container_text
 from wechat.db_receiver import DatabaseReceiver
 from wechat.message_model import WeChatMessageEvent
 from wechat.state import ReceiverState
@@ -46,6 +47,12 @@ def test_schema_probe_detects_capabilities(tmp_path: Path) -> None:
         connection.execute("create table Msg_deadbeef(server_id integer, sort_seq integer, real_sender_id integer, message_content text)")
     probe = probe_sqlite([db])
     assert {"sessions", "messages", "stable_message_id", "sender_id", "contacts"} <= set(probe.capabilities)
+
+
+def test_wcdb_container_text_is_recovered_without_replacement_garbage() -> None:
+    payload = b"\x28\xb5\x2f\xfd\x00\x00\x00\x00\x00\x00" + "Mr.Barry: \u770b\u770b\u8fd9\u4e2a".encode("utf-8") + b"\x01\x00\x00\x00"
+    assert _container_text(payload) == "Mr.Barry: \u770b\u770b\u8fd9\u4e2a"
+    assert _container_text(b"\xff\xfe\xfd\xfc") == ""
 
 
 def test_receiver_state_persists_db_cursors(tmp_path: Path) -> None:

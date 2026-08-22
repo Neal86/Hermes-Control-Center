@@ -416,7 +416,7 @@ class WeChat4SqlcipherBackend(ReceiverBackend):
             senders = self._sender_map(connection)
             select = (
                 f'select local_id, server_id, local_type, sort_seq, real_sender_id, create_time, status, '
-                f'message_content, source, WCDB_CT_message_content, WCDB_CT_source from "{table}"'
+                f'message_content, source from "{table}"'
             )
             params: tuple = ()
             if after is not None:
