@@ -26,13 +26,16 @@ def probe_sqlite(paths: list[Path]) -> SchemaProbe:
     names: set[str] = set()
     columns: set[str] = set()
     for path in paths:
-        with sqlite3.connect(path) as connection:
+        connection = sqlite3.connect(path)
+        try:
             shape = _shape(connection)
             shapes.extend(f"{path.name}:{row}" for row in shape)
             for row in shape:
                 parts = row.split("|")
                 names.add(parts[0])
                 columns.update(piece.split(":", 1)[0] for piece in parts[1:])
+        finally:
+            connection.close()
     capabilities: list[str] = []
     if "SessionTable" in names and {"username", "unread_count", "last_timestamp"} <= columns:
         capabilities.append("sessions")
