@@ -1,7 +1,7 @@
 name: wechat-desktop
 label: Control Center WeChat Runtime
 kind: platform
-version: "0.5.31"
+version: "0.5.32"
 description: Internal Hermes gateway adapter managed by Hermes Control Center for Windows WeChat inbound and outbound messaging
 author: Neal86
 optional_env:
