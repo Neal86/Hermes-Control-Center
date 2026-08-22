@@ -63,6 +63,14 @@ def _persist_independent_gateway_config(root: Path) -> bool:
         return False
 
 
+def _management_center_class():
+    try:  # normal package import when loaded by Hermes
+        from ..management.service import ManagementCenter
+    except (ImportError, ValueError):  # direct source/test import
+        from management.service import ManagementCenter
+    return ManagementCenter
+
+
 def install_independent_gateway_policy() -> None:
     """Make every Control Center Agent use its own real Gateway profile."""
     global _INSTALLED, _CONFIG_CHANGED
@@ -71,12 +79,10 @@ def install_independent_gateway_policy() -> None:
 
     root = _root_hermes_home()
     _CONFIG_CHANGED = _persist_independent_gateway_config(root)
-
-    from management.service import ManagementCenter
-
+    ManagementCenter = _management_center_class()
     original_action = ManagementCenter.agent_action
 
-    def independent_env_for(self: ManagementCenter, name: str | None) -> dict[str, str]:
+    def independent_env_for(self, name: str | None) -> dict[str, str]:
         profile = self._normalize_profile(name)
         self._profile_home(profile)
         env = self.cli.profile_env(self.root)
@@ -85,11 +91,11 @@ def install_independent_gateway_policy() -> None:
         env["HERMES_GATEWAY_MULTIPLEX_PROFILES"] = "0"
         return env
 
-    def never_multiplex(self: ManagementCenter) -> bool:
+    def never_multiplex(self) -> bool:
         return False
 
     def independent_agent_action(
-        self: ManagementCenter,
+        self,
         name: str,
         action: str,
         value: str | None = None,
