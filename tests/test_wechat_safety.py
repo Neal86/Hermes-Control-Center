@@ -17,44 +17,52 @@ WeChatDesktop = adapter_mod.WeChatDesktop
 WeChatUnavailable = adapter_mod.WeChatUnavailable
 
 
+class FakeValuePattern:
+    def __init__(self) -> None:
+        self.values: list[str] = []
+
+    def SetValue(self, value: str) -> None:
+        self.values.append(value)
+
+
 class FakeSearch:
-    def click_input(self) -> None:
-        pass
+    def __init__(self) -> None:
+        self.iface_value = FakeValuePattern()
 
 
 class FakeResult:
     def __init__(self) -> None:
-        self.clicked = 0
+        self.invoked = 0
 
-    def click_input(self) -> None:
-        self.clicked += 1
+    def invoke(self) -> None:
+        self.invoked += 1
 
 
 def test_open_chat_rejects_ambiguous_exact_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = WeChatDesktop(tmp_path)
     fake_window = object()
-    keys: list[str] = []
+    search = FakeSearch()
     monkeypatch.setattr(client, "_main_window", lambda: fake_window)
-    monkeypatch.setattr(client, "_search_edit", lambda win: FakeSearch())
-    monkeypatch.setattr(client, "_paste", lambda text: None)
-    monkeypatch.setattr(client, "_deps", lambda: (None, lambda value, pause=0: keys.append(value), None))
+    monkeypatch.setattr(client, "_search_edit", lambda win: search)
     monkeypatch.setattr(client, "_exact_search_results", lambda win, chat: [FakeResult(), FakeResult()])
+
     with pytest.raises(WeChatUnavailable, match="Ambiguous"):
         client.open_chat("Alex")
-    assert "{ESC}" in keys
+
+    assert search.iface_value.values == ["Alex", ""]
 
 
-def test_open_chat_clicks_single_exact_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_open_chat_invokes_single_exact_result_without_keyboard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = WeChatDesktop(tmp_path)
     fake_window = object()
+    search = FakeSearch()
     result = FakeResult()
-    keys: list[str] = []
     monkeypatch.setattr(client, "_main_window", lambda: fake_window)
-    monkeypatch.setattr(client, "_search_edit", lambda win: FakeSearch())
-    monkeypatch.setattr(client, "_paste", lambda text: None)
-    monkeypatch.setattr(client, "_deps", lambda: (None, lambda value, pause=0: keys.append(value), None))
+    monkeypatch.setattr(client, "_search_edit", lambda win: search)
     monkeypatch.setattr(client, "_exact_search_results", lambda win, chat: [result])
     monkeypatch.setattr(client, "_verify_target", lambda win, chat: True)
+
     client.open_chat("Exact Customer")
-    assert result.clicked == 1
-    assert "{ENTER}" not in keys
+
+    assert search.iface_value.values == ["Exact Customer"]
+    assert result.invoked == 1
