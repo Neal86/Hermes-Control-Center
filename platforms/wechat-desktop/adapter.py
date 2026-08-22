@@ -1,29 +1,35 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import importlib.util
 import os
-import re
 import sys
 import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve()
-# User platform plugins are installed flat under ~/.hermes/plugins/<name>.
-# The Control Center runtime is the sibling ~/.hermes/plugins/hermes-extensions.
 CONTROL_CENTER_ROOT = HERE.parent.parent / "hermes-extensions"
 if not CONTROL_CENTER_ROOT.is_dir() and (HERE.parents[2] / "wechat").is_dir():
-    # Source checkout: the platform lives below platforms/wechat-desktop
-    # while the Control Center package is the repository root.
     CONTROL_CENTER_ROOT = HERE.parents[2]
 if not CONTROL_CENTER_ROOT.is_dir():
     raise RuntimeError(f"Hermes Control Center runtime not found at {CONTROL_CENTER_ROOT}")
 if str(CONTROL_CENTER_ROOT) not in sys.path:
     sys.path.insert(0, str(CONTROL_CENTER_ROOT))
 
-from resources.bindings import ResourceBindings  # noqa: E402
 from resources.context import current_agent, root_hermes_home  # noqa: E402
 from resources.wechat_bound import BoundWeChatDesktop  # noqa: E402
+from wechat.binding import WeChatBindingService  # noqa: E402
+from wechat.receiver import (  # noqa: E402
+    compact_context,
+    group_mentions_me,
+    infer_chat_type,
+    message_fingerprint,
+    normalize_preview,
+    trailing_inbound,
+)
+from wechat.sender import WeChatSender, outbound_fingerprint  # noqa: E402
+from wechat.state import ReceiverState  # noqa: E402
 
 
 def _load_legacy():
@@ -47,10 +53,11 @@ def _load_legacy():
 
 legacy = _load_legacy()
 logger = legacy.logger
+_BOUND_AGENT: contextvars.ContextVar[str] = contextvars.ContextVar("hcc_wechat_bound_agent", default="default")
 
 
 class _BoundFactory:
-    agent = "default"
+    """Legacy loader target whose Agent selection is context-local, not global."""
 
     @staticmethod
     def available() -> bool:
@@ -60,28 +67,34 @@ class _BoundFactory:
             return False
 
     def __new__(cls):
-        return BoundWeChatDesktop(cls.agent or current_agent())
+        agent = str(_BOUND_AGENT.get() or current_agent()).strip().lower()
+        resource = WeChatBindingService().require(agent, ready=True)
+        return BoundWeChatDesktop(agent, resource_id=str(resource["id"]))
 
 
 legacy._load_desktop_class = lambda: _BoundFactory
 
 
 class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
-    """Two-stage background WeChat receiver with exact source-chat routing.
+    """Thin Hermes Gateway adapter over the WeChat domain modules.
 
-    Stage 1 watches only session-list previews. A preview change is a candidate,
-    not a message decision. Stage 2 background-selects that exact chat through
-    UIA SelectionItem, verifies the title, reads real recent message rows, then
-    decides DELIVER/SKIP. No foreground fallback, mouse, keyboard, resize or
-    window activation is allowed by BoundWeChatDesktop.
+    Receiver parsing/dedup lives in wechat.receiver/state, ownership lives in
+    wechat.binding, and outbound delivery lives in wechat.sender. This adapter is
+    responsible only for translating those domain results into Hermes events.
     """
 
     def __init__(self, config):
-        _BoundFactory.agent = str((config.extra or {}).get("bound_agent") or current_agent()).strip().lower()
-        super().__init__(config)
+        self.bound_agent = str((config.extra or {}).get("bound_agent") or current_agent()).strip().lower()
+        token = _BOUND_AGENT.set(self.bound_agent)
+        try:
+            super().__init__(config)
+        finally:
+            _BOUND_AGENT.reset(token)
         self.allowed_chats = set()
-        self._preview_seen: dict[str, str] = {}
+        self.receiver_state = ReceiverState(self.bound_agent)
+        self._preview_seen = self.receiver_state.previews
         self._baseline_complete = False
+        self.sender = WeChatSender(self.desktop)
         self._health_path = (
             root_hermes_home()
             / "plugin-data"
@@ -95,89 +108,15 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
         del chat
         return True
 
-    @staticmethod
-    def _preview_message(preview: str) -> str:
-        text = str(preview or "").strip()
-        if not text:
-            return ""
-        return re.sub(r"^\s*(?:(?:上午|下午)\s*)?\d{1,2}:\d{2}\s*", "", text).strip()
+    _preview_message = staticmethod(normalize_preview)
+    _group_mentions_me = staticmethod(group_mentions_me)
+    _compact_context = staticmethod(compact_context)
+    _trailing_inbound = staticmethod(trailing_inbound)
+    _message_fingerprint = staticmethod(message_fingerprint)
 
     @staticmethod
     def _preview_fingerprint(chat: str, preview: str) -> str:
-        raw = f"{chat}\0{preview}".encode("utf-8")
-        return legacy.hashlib.sha256(raw).hexdigest()
-
-    @staticmethod
-    def _group_mentions_me(text: str) -> bool:
-        value = str(text or "").lower()
-        return any(
-            marker in value
-            for marker in (
-                "有人@我",
-                "[有人@我]",
-                "【有人@我】",
-                "@我",
-                "提到了你",
-                "mentioned you",
-                "mentioned me",
-            )
-        )
-
-    @staticmethod
-    def _preview_sender(chat_type: str, chat: str, text: str) -> tuple[str, str]:
-        if chat_type != "group":
-            return chat, text
-        for separator in (": ", "："):
-            if separator in text:
-                sender, body = text.split(separator, 1)
-                if sender.strip() and body.strip():
-                    return sender.strip(), body.strip()
-        return chat, text
-
-    @staticmethod
-    def _compact_context(messages: list[dict], limit: int = 12) -> list[dict]:
-        compact = []
-        for row in messages[-max(1, limit):]:
-            compact.append(
-                {
-                    "text": str(row.get("text") or "").strip(),
-                    "sender": str(row.get("sender") or "").strip() or None,
-                    "direction": str(row.get("direction") or "").strip().lower() or None,
-                    "time": row.get("time"),
-                    "message_id": row.get("message_id"),
-                }
-            )
-        return compact
-
-    @staticmethod
-    def _trailing_inbound(messages: list[dict]) -> list[dict]:
-        """Return the consecutive inbound tail after the most recent outbound row."""
-        tail: list[dict] = []
-        for row in reversed(messages):
-            text = str(row.get("text") or "").strip()
-            if not text:
-                continue
-            direction = str(row.get("direction") or "").strip().lower()
-            if direction == "outbound":
-                break
-            if direction in {"", "inbound"}:
-                tail.append(row)
-        tail.reverse()
-        return tail
-
-    @staticmethod
-    def _message_fingerprint(chat: str, rows: list[dict]) -> str:
-        parts = [chat]
-        for row in rows:
-            parts.extend(
-                [
-                    str(row.get("message_id") or ""),
-                    str(row.get("sender") or ""),
-                    str(row.get("time") or ""),
-                    str(row.get("text") or ""),
-                ]
-            )
-        return legacy.hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+        return ReceiverState.preview_fingerprint(chat, preview)
 
     def _decision_log(
         self,
@@ -206,22 +145,23 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
             "-" if mentioned_me is None else bool(mentioned_me),
         )
 
-    def _prune_dedup(self, now: float) -> None:
-        self._recent_outbound = {
-            chat: entry
-            for chat, entry in self._recent_outbound.items()
-            if now - entry[1] < legacy.OUTBOUND_ECHO_SECONDS * 2
-        }
-        # Keep actual inbound fingerprints long enough to suppress repeated deep
-        # reads while allowing bounded memory use.
-        self._seen = {
-            chat: entry
-            for chat, entry in self._seen.items()
-            if now - entry[1] < max(legacy.INBOUND_DEDUP_SECONDS * 10, 1200.0)
-        }
+    def _commit_preview(self, chat: str, preview: str) -> str:
+        fingerprint = self._preview_fingerprint(chat, preview)
+        self.receiver_state.commit_preview(chat, fingerprint)
+        self._preview_seen = self.receiver_state.previews
+        return fingerprint
 
     async def _seed_startup_baseline(self) -> None:
-        """Create exactly one startup snapshot before the polling task begins."""
+        """Baseline only on first-ever state; preserve cursors across restarts."""
+        if self.receiver_state.previews:
+            self._baseline_complete = True
+            logger.info(
+                "WECHAT_RECEIVE_BASELINE_RESTORED agent=%s chats=%s",
+                self.bound_agent,
+                len(self.receiver_state.previews),
+            )
+            return
+
         rows = await asyncio.to_thread(self.desktop.list_chats, 200)
         seeded = 0
         for row in rows:
@@ -229,17 +169,17 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
             preview = self._preview_message(getattr(row, "preview", ""))
             if not chat or not preview:
                 continue
-            self._preview_seen[chat] = self._preview_fingerprint(chat, preview)
+            self._commit_preview(chat, preview)
             seeded += 1
             self._decision_log(
                 chat=chat,
                 preview=preview,
                 unread=bool(getattr(row, "unread", False)),
                 decision="SKIP",
-                reason="startup_baseline",
+                reason="first_install_baseline",
             )
         self._baseline_complete = True
-        logger.info("WECHAT_RECEIVE_BASELINE_COMPLETE chats=%s", seeded)
+        logger.info("WECHAT_RECEIVE_BASELINE_COMPLETE agent=%s chats=%s", self.bound_agent, seeded)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         del is_reconnect
@@ -266,14 +206,11 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
         return True
 
     async def _inspect_candidate(self, row, *, chat: str, preview: str, previous_preview: str | None) -> None:
-        """Background-open one changed chat, read real rows, and route or skip."""
         unread = bool(getattr(row, "unread", False))
         preview_mentions_me = self._group_mentions_me(preview)
 
-        # For chats already known to be groups, a preview without WeChat's mention
-        # marker can be rejected without changing that WeChat instance's selected chat.
         if chat in self.group_chats and not preview_mentions_me:
-            self._preview_seen[chat] = self._preview_fingerprint(chat, preview)
+            self._commit_preview(chat, preview)
             self._decision_log(
                 chat=chat,
                 preview=preview,
@@ -288,8 +225,6 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
         try:
             messages = await asyncio.to_thread(self.desktop.get_messages, chat, 20)
         except Exception:
-            # Do not advance preview state: the next poll retries the exact same
-            # candidate instead of silently losing it.
             self._decision_log(
                 chat=chat,
                 preview=preview,
@@ -302,7 +237,7 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
             raise
 
         if not messages:
-            self._preview_seen[chat] = self._preview_fingerprint(chat, preview)
+            self._commit_preview(chat, preview)
             self._decision_log(
                 chat=chat,
                 preview=preview,
@@ -318,7 +253,7 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
         latest = messages[-1]
         latest_direction = str(latest.get("direction") or "").strip().lower()
         if latest_direction == "outbound":
-            self._preview_seen[chat] = self._preview_fingerprint(chat, preview)
+            self._commit_preview(chat, preview)
             self._decision_log(
                 chat=chat,
                 preview=preview,
@@ -334,7 +269,7 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
 
         inbound_tail = self._trailing_inbound(messages)
         if not inbound_tail:
-            self._preview_seen[chat] = self._preview_fingerprint(chat, preview)
+            self._commit_preview(chat, preview)
             self._decision_log(
                 chat=chat,
                 preview=preview,
@@ -348,24 +283,16 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
             return
 
         sender = str(inbound_tail[-1].get("sender") or chat).strip() or chat
-        inferred_group = (
-            chat in self.group_chats
-            or preview_mentions_me
-            or any(
-                str(msg.get("sender") or "").strip()
-                and str(msg.get("sender") or "").strip() != chat
-                for msg in inbound_tail
-            )
+        chat_type = infer_chat_type(
+            chat,
+            inbound_tail,
+            known_group=chat in self.group_chats,
+            mentioned=preview_mentions_me,
         )
-        if inferred_group:
+        if chat_type == "group":
             self.group_chats.add(chat)
-        chat_type = "group" if inferred_group else "dm"
-
-        # Group delivery requires the account-level mention marker from WeChat's
-        # session preview. Private chats always deliver when real inbound content
-        # changed after the startup baseline.
         if chat_type == "group" and not preview_mentions_me:
-            self._preview_seen[chat] = self._preview_fingerprint(chat, preview)
+            self._commit_preview(chat, preview)
             self._decision_log(
                 chat=chat,
                 preview=preview,
@@ -382,14 +309,13 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
         texts = [str(msg.get("text") or "").strip() for msg in inbound_tail]
         texts = [text for text in texts if text]
         if not texts:
-            self._preview_seen[chat] = self._preview_fingerprint(chat, preview)
+            self._commit_preview(chat, preview)
             return
         text = "\n".join(texts)
         fingerprint = self._message_fingerprint(chat, inbound_tail)
         now = time.monotonic()
-        previous_actual = self._seen.get(chat)
-        if previous_actual and previous_actual[0] == fingerprint:
-            self._preview_seen[chat] = self._preview_fingerprint(chat, preview)
+        if self.receiver_state.seen_message(chat, fingerprint):
+            self._commit_preview(chat, preview)
             self._decision_log(
                 chat=chat,
                 preview=preview,
@@ -403,15 +329,10 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
             )
             return
 
-        outbound_fingerprint = self._outbound_fingerprint(text)
-        if self._is_recent(
-            self._recent_outbound.get(chat),
-            outbound_fingerprint,
-            now,
-            legacy.OUTBOUND_ECHO_SECONDS,
-        ):
-            self._seen[chat] = (fingerprint, now)
-            self._preview_seen[chat] = self._preview_fingerprint(chat, preview)
+        echo = outbound_fingerprint(text)
+        if self._is_recent(self._recent_outbound.get(chat), echo, now, legacy.OUTBOUND_ECHO_SECONDS):
+            self.receiver_state.commit_message(chat, fingerprint)
+            self._commit_preview(chat, preview)
             self._decision_log(
                 chat=chat,
                 preview=preview,
@@ -425,9 +346,6 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
             )
             return
 
-        self._seen[chat] = (fingerprint, now)
-        self._preview_seen[chat] = self._preview_fingerprint(chat, preview)
-        self._prune_dedup(now)
         source = self.build_source(
             chat_id=chat,
             chat_name=chat,
@@ -457,6 +375,13 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
             },
             timestamp=legacy.datetime.now(legacy.UTC),
         )
+        await self.handle_message(event)
+        # Commit only after successful delivery so a failed Gateway handoff is
+        # retried rather than silently acknowledged.
+        self.receiver_state.commit_message(chat, fingerprint)
+        self._commit_preview(chat, preview)
+        self._seen[chat] = (fingerprint, now)
+        self._prune_dedup(now)
         self._decision_log(
             chat=chat,
             preview=preview,
@@ -468,20 +393,16 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
             sender=sender,
             mentioned_me=preview_mentions_me,
         )
-        await self.handle_message(event)
 
     async def _poll_loop(self) -> None:
-        """Watch previews, then deep-read only changed chats in strict background mode."""
         while self._running:
             sleep_for = self.poll_seconds
             try:
                 rows = await asyncio.to_thread(self.desktop.list_chats, 200)
                 if not self._baseline_complete:
-                    # Defensive path only; normal connect seeds the baseline first.
                     await self._seed_startup_baseline()
                     await asyncio.sleep(sleep_for)
                     continue
-
                 for row in rows:
                     chat = str(row.name or "").strip()
                     if not chat:
@@ -489,11 +410,9 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
                     preview = self._preview_message(getattr(row, "preview", ""))
                     if not preview:
                         continue
-                    preview_fp = self._preview_fingerprint(chat, preview)
-                    previous_preview = self._preview_seen.get(chat)
-                    if previous_preview == preview_fp:
+                    changed, previous_preview, _ = self.receiver_state.preview_changed(chat, preview)
+                    if not changed:
                         continue
-
                     reason = "new_chat_after_baseline" if previous_preview is None else "preview_changed_after_baseline"
                     logger.info(
                         "WECHAT_RECEIVE_CANDIDATE chat=%r preview=%r unread=%s reason=%s previous_preview_fp=%s",
@@ -509,7 +428,6 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
                         preview=preview,
                         previous_preview=previous_preview,
                     )
-
                 self._poll_success()
             except asyncio.CancelledError:
                 raise
@@ -517,8 +435,24 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
                 sleep_for = self._poll_failure(exc)
             await asyncio.sleep(sleep_for)
 
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: str | None = None,
+        metadata: dict | None = None,
+    ):
+        del reply_to, metadata
+        try:
+            result = await asyncio.to_thread(self.sender.send, chat_id, content)
+        except Exception as exc:
+            return legacy.SendResult(success=False, error=str(exc))
+        now = time.monotonic()
+        self._recent_outbound[str(chat_id).strip()] = (result["fingerprint"], now)
+        self._prune_dedup(now)
+        return legacy.SendResult(success=True, message_id=result["message_id"])
 
-# legacy.register resolves this global when it creates the adapter factory.
+
 legacy.WeChatDesktopPlatformAdapter = WeChatDesktopPlatformAdapter
 check_requirements = legacy.check_requirements
 
@@ -526,7 +460,7 @@ check_requirements = legacy.check_requirements
 def validate_config(config) -> bool:
     try:
         agent = str((config.extra or {}).get("bound_agent") or current_agent()).strip().lower()
-        ResourceBindings().require(agent, "wechat", ready=True)
+        WeChatBindingService().require(agent, ready=True)
         return check_requirements()
     except Exception as exc:
         logger.error("WeChat Desktop configuration validation failed: %s", exc)
@@ -534,8 +468,6 @@ def validate_config(config) -> bool:
 
 
 def register(ctx):
-    # Explicitly opt this local desktop adapter into all senders. This is scoped
-    # only to wechat_desktop; it does not open Telegram/Discord/other gateways.
     os.environ["WECHAT_DESKTOP_ALLOW_ALL_USERS"] = "true"
     ctx.register_platform(
         name="wechat_desktop",
@@ -549,9 +481,7 @@ def register(ctx):
         max_message_length=4000,
         platform_hint=(
             "This request came from the Agent-bound local Windows WeChat gateway. "
-            "The gateway already background-opened and verified the exact source chat and may include "
-            "multiple consecutive customer messages as one request. Never use computer_use or any generic "
-            "desktop tool to operate WeChat/Weixin. Use bound browser tools when web lookup is needed. "
+            "Never use computer_use or a generic desktop tool to operate WeChat. "
             "Return only the customer-facing reply; the Gateway delivers it exactly once to source_chat_id."
         ),
         emoji="💬",
