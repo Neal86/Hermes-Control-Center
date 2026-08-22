@@ -80,8 +80,8 @@ function Find-HermesPython {
 function Copy-RuntimeTree {
     param([string]$From, [string]$To)
     New-Item -ItemType Directory -Force -Path $To | Out-Null
-    $files = @("plugin.yaml", "__init__.py", "schemas.py", "tools.py", "compatibility.py", "doctor.ps1", "requirements.txt", "requirements-windows.txt")
-    $dirs = @("dashboard", "management", "task_center", "providers", "resources", "wechat")
+    $files = @("plugin.yaml", "__init__.py", "schemas.py", "tools.py", "compatibility.py", "gateway_isolation.py", "doctor.ps1", "requirements.txt", "requirements-windows.txt")
+    $dirs = @("dashboard", "management", "task_center", "providers", "resources", "wechat", "browser", "hcc_gateway")
     foreach ($rel in $files) {
         $src = Join-Path $From $rel
         if (Test-Path -LiteralPath $src) { Write-Stage "Copying $rel"; Copy-Item -LiteralPath $src -Destination (Join-Path $To $rel) -Force }
@@ -142,14 +142,17 @@ print("Enabled plugins: " + ", ".join(str(x) for x in actual))
 }
 
 $RequiredPaths = @(
-    "plugin.yaml", "__init__.py",
+    "plugin.yaml", "__init__.py", "gateway_isolation.py",
     "dashboard\manifest.json", "dashboard\plugin_api.py", "dashboard\plugin_api_core.py", "dashboard\extra_api.py",
     "dashboard\build_bundle.py", "dashboard\src\api.js", "dashboard\src\components.js", "dashboard\src\app.js",
     "dashboard\src\control_center_v2.js", "dashboard\src\control_cleanup.js", "dashboard\src\index.js",
     "doctor.ps1", "compatibility.py", "management\overview.py", "management\service.py", "task_center\service_v3.py",
     "providers\__init__.py", "providers\service.py", "resources\__init__.py", "resources\context.py",
-    "resources\discovery.py", "resources\registry.py", "resources\bindings.py", "resources\policy.py",
-    "resources\tools.py", "resources\wechat_bound.py", "wechat\adapter.py", "wechat\runtime.py", "requirements-windows.txt",
+    "resources\discovery.py", "resources\discovery_v2.py", "resources\registry.py", "resources\bindings.py", "resources\policy.py",
+    "resources\tools.py", "resources\wechat_bound.py", "wechat\adapter.py", "wechat\runtime.py", "wechat\binding.py",
+    "wechat\receiver.py", "wechat\sender.py", "wechat\state.py", "wechat\identity.py", "wechat\focus_guard.py", "wechat\discovery.py",
+    "browser\__init__.py", "browser\discovery.py", "browser\binding.py", "browser\runtime.py",
+    "hcc_gateway\__init__.py", "hcc_gateway\lifecycle.py", "hcc_gateway\routing.py", "requirements-windows.txt",
     "platforms\wechat-desktop\plugin.yaml", "platforms\wechat-desktop\adapter.py", "platforms\wechat-desktop\adapter_legacy.py"
 )
 foreach ($rel in $RequiredPaths) { $path = Join-Path $Source $rel; if (-not (Test-Path -LiteralPath $path)) { throw "Hermes Control Center package is incomplete: missing $path" } }
@@ -214,7 +217,7 @@ try {
     if ($buildExit -ne 0) { throw "Dashboard/Web bundle build failed with exit code $buildExit. The build output is shown above." }
     Write-Stage "Dashboard/Web bundle complete"
     Write-Stage "Validating staged files"
-    foreach ($required in @("plugin.yaml","__init__.py","dashboard\manifest.json","dashboard\dist\index.js","dashboard\plugin_api.py","dashboard\plugin_api_core.py","dashboard\extra_api.py","providers\service.py","resources\context.py","resources\bindings.py","resources\policy.py","resources\tools.py","resources\wechat_bound.py","wechat\runtime.py")) {
+    foreach ($required in @("plugin.yaml","__init__.py","gateway_isolation.py","dashboard\manifest.json","dashboard\dist\index.js","dashboard\plugin_api.py","dashboard\plugin_api_core.py","dashboard\extra_api.py","providers\service.py","resources\context.py","resources\bindings.py","resources\policy.py","resources\tools.py","resources\wechat_bound.py","wechat\runtime.py","wechat\binding.py","wechat\receiver.py","wechat\sender.py","wechat\state.py","browser\runtime.py","hcc_gateway\lifecycle.py","hcc_gateway\routing.py")) {
         if (-not (Test-Path -LiteralPath (Join-Path $StagePlugin $required))) { throw "Staging validation failed: missing $required" }
     }
     foreach ($required in @("plugin.yaml","adapter.py","adapter_legacy.py")) { if (-not (Test-Path -LiteralPath (Join-Path $StagePlatform $required))) { throw "WeChat platform staging validation failed: missing $required" } }
