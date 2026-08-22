@@ -36,6 +36,10 @@ compat = _load_file(PLUGIN_ROOT / "compatibility.py", "hcc_compatibility")
 compat.install_hermes_cli_compat()
 TaskCenter = load_module("hcc_task_center", "task_center", "service_v3").TaskCenter
 ManagementCenter = load_module("hcc_management", "management", "routed_service").ManagementCenter
+gateway_lifecycle = _load_file(
+    PLUGIN_ROOT / "hcc_gateway" / "lifecycle.py", "hcc_dashboard_gateway_lifecycle"
+)
+gateway_lifecycle.install_independent_gateway_policy(ManagementCenter)
 ProviderService = load_module("hcc_providers", "providers", "service").ProviderService
 ResourceBindings = load_module("hcc_resources", "resources", "bindings").ResourceBindings
 ResourceRegistry = load_module("hcc_resources", "resources", "registry").ResourceRegistry
