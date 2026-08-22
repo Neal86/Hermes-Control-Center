@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,48 @@ def _persist_independent_gateway_config(root: Path) -> bool:
         return False
 
 
+def _sync_enabled_user_plugins(root: Path, profile_home: Path) -> list[str]:
+    """Mirror enabled root user plugins into an isolated profile home.
+
+    Hermes scopes user-plugin discovery to the active profile home. A profile
+    gateway therefore cannot load root-installed plugins merely because their
+    names are present in the profile config. Refresh only explicitly enabled
+    root user plugins immediately before that profile gateway starts.
+    """
+    if yaml is None:
+        return []
+    config_path = profile_home / "config.yaml"
+    if not config_path.is_file():
+        return []
+    try:
+        payload = yaml.safe_load(config_path.read_text("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"Unable to read profile plugin config: {config_path}: {exc}") from exc
+    plugins = payload.get("plugins") if isinstance(payload, dict) else None
+    enabled = plugins.get("enabled") if isinstance(plugins, dict) else None
+    if not isinstance(enabled, list):
+        return []
+
+    source_root = root / "plugins"
+    target_root = profile_home / "plugins"
+    copied: list[str] = []
+    for raw_name in enabled:
+        name = str(raw_name or "").strip()
+        if not name or Path(name).name != name or any(sep in name for sep in ("/", \"\\\")):
+            continue
+        source = source_root / name
+        if not source.is_dir():
+            continue
+        target_root.mkdir(parents=True, exist_ok=True)
+        target = target_root / name
+        try:
+            shutil.copytree(source, target, dirs_exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(f"Unable to inherit enabled user plugin '{name}' into profile '{profile_home.name}': {exc}") from exc
+        copied.append(name)
+    return copied
+
+
 def _management_center_class():
     try:  # normal package import when loaded by Hermes
         from ..management.service import ManagementCenter
@@ -104,6 +147,8 @@ def install_independent_gateway_policy(management_center_class=None) -> None:
         global _CONFIG_CHANGED
         profile = self._normalize_profile(name)
         normalized_action = str(action or "").strip().lower()
+        if profile != "default" and normalized_action in {"gateway_start", "gateway_restart"}:
+            _sync_enabled_user_plugins(root, self._profile_home(profile))
         if (
             _CONFIG_CHANGED
             and profile != "default"

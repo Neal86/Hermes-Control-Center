@@ -55,3 +55,30 @@ def test_dashboard_dynamic_management_center_gets_independent_gateway_policy(
     assert getattr(api.ManagementCenter, "_hcc_independent_gateway_policy_installed", False) is True
     assert api.ManagementCenter._gateway_multiplexes_profiles(object()) is False
     assert "multiplex_profiles: false" in config_path.read_text("utf-8")
+
+
+def test_isolated_profile_inherits_only_enabled_root_user_plugins(tmp_path: Path) -> None:
+    lifecycle_path = ROOT / "hcc_gateway" / "lifecycle.py"
+    spec = importlib.util.spec_from_file_location("hx_gateway_lifecycle_test", lifecycle_path)
+    assert spec and spec.loader
+    lifecycle = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lifecycle)
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "11"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text(
+        "plugins:\n  enabled:\n    - hermes-extensions\n    - wechat-desktop\n",
+        "utf-8",
+    )
+    for name in ("hermes-extensions", "wechat-desktop", "disabled-plugin"):
+        source = root / "plugins" / name
+        source.mkdir(parents=True)
+        (source / "plugin.yaml").write_text(f"name: {name}\n", "utf-8")
+
+    copied = lifecycle._sync_enabled_user_plugins(root, profile)
+
+    assert copied == ["hermes-extensions", "wechat-desktop"]
+    assert (profile / "plugins" / "hermes-extensions" / "plugin.yaml").is_file()
+    assert (profile / "plugins" / "wechat-desktop" / "plugin.yaml").is_file()
+    assert not (profile / "plugins" / "disabled-plugin").exists()
