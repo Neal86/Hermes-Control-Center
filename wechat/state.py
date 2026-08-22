@@ -33,9 +33,15 @@ class ReceiverState:
         previews = payload.get("previews", {})
         messages = payload.get("messages", {})
         outbound = payload.get("outbound", {})
+        db_cursors = payload.get("db_cursors", {})
         self.previews: dict[str, str] = dict(previews) if isinstance(previews, dict) else {}
         self.messages: dict[str, dict[str, Any]] = dict(messages) if isinstance(messages, dict) else {}
         self.outbound: dict[str, dict[str, Any]] = dict(outbound) if isinstance(outbound, dict) else {}
+        self.db_cursors: dict[str, int] = {
+            str(key): int(value)
+            for key, value in (db_cursors.items() if isinstance(db_cursors, dict) else [])
+            if str(key)
+        }
 
     def _read(self) -> dict[str, Any]:
         try:
@@ -50,11 +56,12 @@ class ReceiverState:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
                 json.dump(
                     {
-                        "version": 2,
+                        "version": 3,
                         "agent": self.agent,
                         "previews": self.previews,
                         "messages": self.messages,
                         "outbound": self.outbound,
+                        "db_cursors": self.db_cursors,
                     },
                     handle,
                     ensure_ascii=False,
@@ -118,3 +125,21 @@ class ReceiverState:
         if str(entry.get("fingerprint") or "") != fingerprint:
             return False
         return time.time() - float(entry.get("at") or 0) < max(1.0, ttl)
+
+    def commit_db_cursor(self, conversation_id: str, sort_seq: int) -> None:
+        key = str(conversation_id or "").strip()
+        if not key:
+            return
+        self.db_cursors[key] = max(int(sort_seq or 0), int(self.db_cursors.get(key, 0)))
+        self._save()
+
+    def commit_db_cursors(self, cursors: dict[str, int]) -> None:
+        changed = False
+        for conversation_id, sort_seq in cursors.items():
+            key = str(conversation_id or "").strip()
+            value = int(sort_seq or 0)
+            if key and value > int(self.db_cursors.get(key, 0)):
+                self.db_cursors[key] = value
+                changed = True
+        if changed:
+            self._save()
