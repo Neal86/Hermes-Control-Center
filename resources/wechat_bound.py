@@ -32,13 +32,13 @@ def _thread_lock(resource_id: str) -> threading.RLock:
 
 
 class BoundWeChatDesktop(_RuntimeWeChat):
-    """Strict background-only WeChat runtime pinned to one Agent resource.
+    """WeChat runtime pinned to one Agent resource with foreground restoration.
 
-    Receive operations use background UIA. A changed chat may be selected through
-    SelectionItem so its real recent messages can be read, but the runtime never
-    calls Invoke/click, SetForegroundWindow, BringWindowToTop, ShowWindow,
-    SetWindowPos, or physical keyboard/mouse input. If a different chat would
-    require foreground activation, the operation fails closed.
+    Polling keeps using read-only UIA. Only a changed conversation may require a
+    SelectionItem switch so its real messages can be read. If modern WeChat takes
+    foreground during that switch, the runtime immediately restores the exact app
+    that was foreground before the operation. No mouse/keyboard input, resizing,
+    moving, search fallback, or alternate WeChat instance is allowed.
     """
 
     def __init__(self, agent: str, resource_id: str | None = None, *, lock_timeout: float = 15.0) -> None:
@@ -90,15 +90,36 @@ class BoundWeChatDesktop(_RuntimeWeChat):
         except Exception:
             pass
 
-    def _assert_no_focus_takeover(self, *, before: int, operation: str) -> None:
-        if os.name != "nt" or not before:
+    def _restore_previous_foreground(self, *, before: int, operation: str) -> None:
+        """Put the user's original app back if WeChat stole foreground.
+
+        SelectionItem.Select is the only known UIA operation here that may make
+        modern WeChat foreground. We intentionally allow the selection to finish,
+        then restore the pre-operation foreground HWND immediately. This avoids
+        retry loops that would repeatedly steal focus on every poll.
+        """
+        if os.name != "nt" or not before or before == self.window_handle:
             return
         after = self._foreground_hwnd()
-        if after == self.window_handle and before != self.window_handle:
-            self._record_focus_violation(before=before, after=after, operation=operation)
-            raise WeChatUnavailable(
-                f"BACKGROUND_FOCUS_VIOLATION during {operation}; refusing foreground fallback"
-            )
+        if after != self.window_handle:
+            return
+        self._record_focus_violation(before=before, after=after, operation=operation)
+        try:
+            user32 = ctypes.windll.user32
+            try:
+                user32.AllowSetForegroundWindow(-1)
+            except Exception:
+                pass
+            for _ in range(4):
+                user32.SetForegroundWindow(int(before))
+                time.sleep(0.03)
+                if self._foreground_hwnd() == before:
+                    return
+        except Exception:
+            pass
+        # Do not throw here. The message read/send may already have succeeded;
+        # throwing would leave its preview uncommitted and cause the same chat to
+        # be retried on every polling cycle, producing repeated focus changes.
 
     def _main_window(self):
         Desktop = self._deps()
@@ -115,7 +136,7 @@ class BoundWeChatDesktop(_RuntimeWeChat):
 
     @contextlib.contextmanager
     def _ui_transaction(self) -> Iterator[None]:
-        """Serialize UIA access without any foreground restoration side effects."""
+        """Serialize UIA access and restore the user's foreground app afterward."""
         key = self.resource_id
         depths = getattr(_LOCAL, "depths", None)
         if depths is None:
@@ -149,7 +170,7 @@ class BoundWeChatDesktop(_RuntimeWeChat):
         finally:
             lock.release()
         if completed:
-            self._assert_no_focus_takeover(before=before, operation="ui_transaction")
+            self._restore_previous_foreground(before=before, operation="ui_transaction")
 
     def list_chats(self, limit: int = 200) -> list[ChatRow]:
         """Read the existing session list without resizing, moving, or activating WeChat."""
@@ -252,14 +273,7 @@ class BoundWeChatDesktop(_RuntimeWeChat):
             return False
 
     def _is_current_target(self, win, chat: str) -> bool:
-        """Verify target using title OR the session's UIA selected state.
-
-        Modern WeChat sometimes exposes a stale/missing current_chat_name_label,
-        causing the base verifier to falsely report that the already-selected
-        source chat is not current. Re-selecting it then triggers foreground
-        activation. Reading CurrentIsSelected is side-effect free and prevents
-        that unnecessary second Select().
-        """
+        """Verify target using title OR the session's UIA selected state."""
         try:
             if super()._is_current_target(win, chat):
                 return True
@@ -269,7 +283,7 @@ class BoundWeChatDesktop(_RuntimeWeChat):
         return len(matches) == 1 and self._session_selected(matches[0])
 
     def _select_session_background(self, control, *, chat: str) -> None:
-        """Select one session with the raw UIA SelectionItem pattern only."""
+        """Select one session, then immediately restore the user's prior app."""
         before = self._foreground_hwnd()
         try:
             control.iface_selection_item.Select()
@@ -278,10 +292,10 @@ class BoundWeChatDesktop(_RuntimeWeChat):
                 f"BACKGROUND_SEND_UNSUPPORTED: WeChat session {chat!r} has no background SelectionItem pattern"
             ) from exc
         time.sleep(0.25)
-        self._assert_no_focus_takeover(before=before, operation=f"select_session:{chat}")
+        self._restore_previous_foreground(before=before, operation=f"select_session:{chat}")
 
     def open_chat(self, chat: str) -> None:
-        """Open a chat in the background from the existing session list only."""
+        """Open a chat from the bound WeChat session list only."""
         chat = chat.strip()
         if not chat:
             raise ValueError("chat is required")
@@ -294,14 +308,14 @@ class BoundWeChatDesktop(_RuntimeWeChat):
         if not matches:
             raise WeChatUnavailable(
                 f"BACKGROUND_SEND_UNSUPPORTED: session {chat!r} is not exposed in the current session list; "
-                "strict background mode will not search, resize, activate, or click the WeChat window"
+                "strict mode will not search, resize, activate, click, or switch to another WeChat instance"
             )
         if self._session_selected(matches[0]):
             return
         self._select_session_background(matches[0], chat=chat)
         win = self._main_window()
         if not self._is_current_target(win, chat):
-            raise WeChatUnavailable(f"Background target verification failed after selecting {chat!r}")
+            raise WeChatUnavailable(f"Target verification failed after selecting {chat!r}")
 
     @staticmethod
     def _clean_message_text(text: str) -> str:
@@ -336,6 +350,7 @@ class BoundWeChatDesktop(_RuntimeWeChat):
                 "read_only_receive": False,
                 "background_chat_selection": True,
                 "selected_state_verification": True,
+                "restore_previous_foreground": True,
                 "foreground_fallback": False,
                 "window_resize_allowed": False,
                 "window_move_allowed": False,
