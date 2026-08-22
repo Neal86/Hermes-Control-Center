@@ -8,11 +8,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-from resources.context import root_hermes_home
+try:  # plugin package import
+    from ..resources.context import root_hermes_home
+except (ImportError, ValueError):  # source/platform import
+    from resources.context import root_hermes_home
 
 
 class ReceiverState:
-    """Persistent receive cursor/dedup state scoped to one Agent."""
+    """Persistent receive cursor/dedup/echo state scoped to one Agent."""
 
     def __init__(self, agent: str, path: Path | None = None) -> None:
         self.agent = str(agent or "").strip().lower() or "default"
@@ -27,8 +30,12 @@ class ReceiverState:
         )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = self._read()
-        self.previews: dict[str, str] = dict(payload.get("previews", {}))
-        self.messages: dict[str, dict[str, Any]] = dict(payload.get("messages", {}))
+        previews = payload.get("previews", {})
+        messages = payload.get("messages", {})
+        outbound = payload.get("outbound", {})
+        self.previews: dict[str, str] = dict(previews) if isinstance(previews, dict) else {}
+        self.messages: dict[str, dict[str, Any]] = dict(messages) if isinstance(messages, dict) else {}
+        self.outbound: dict[str, dict[str, Any]] = dict(outbound) if isinstance(outbound, dict) else {}
 
     def _read(self) -> dict[str, Any]:
         try:
@@ -42,7 +49,13 @@ class ReceiverState:
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
                 json.dump(
-                    {"version": 1, "agent": self.agent, "previews": self.previews, "messages": self.messages},
+                    {
+                        "version": 2,
+                        "agent": self.agent,
+                        "previews": self.previews,
+                        "messages": self.messages,
+                        "outbound": self.outbound,
+                    },
                     handle,
                     ensure_ascii=False,
                     indent=2,
@@ -86,3 +99,22 @@ class ReceiverState:
             if isinstance(value, dict) and float(value.get("at") or 0) >= cutoff
         }
         self._save()
+
+    def remember_outbound(self, chat: str, fingerprint: str) -> None:
+        now = time.time()
+        self.outbound[chat] = {"fingerprint": fingerprint, "at": now}
+        cutoff = now - 3600.0
+        self.outbound = {
+            key: value
+            for key, value in self.outbound.items()
+            if isinstance(value, dict) and float(value.get("at") or 0) >= cutoff
+        }
+        self._save()
+
+    def recent_outbound(self, chat: str, fingerprint: str, ttl: float = 60.0) -> bool:
+        entry = self.outbound.get(chat)
+        if not isinstance(entry, dict):
+            return False
+        if str(entry.get("fingerprint") or "") != fingerprint:
+            return False
+        return time.time() - float(entry.get("at") or 0) < max(1.0, ttl)
