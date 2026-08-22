@@ -4,8 +4,10 @@ import importlib
 from pathlib import Path
 
 from browser import runtime as browser_runtime
+from browser.discovery import discover_browser_resources
 from hcc_gateway.routing import build_reply_metadata, source_chat_id
 from resources import browser_manager as browser_compat
+from wechat.discovery import discover_wechat_resources
 from wechat.identity import compatible_resource, stable_binding_id
 from wechat.receiver import group_mentions_me, trailing_inbound
 from wechat.state import ReceiverState
@@ -21,6 +23,23 @@ def test_browser_runtime_is_canonical_and_resources_path_is_compatibility_only()
     assert browser_compat.probe_cdp is browser_runtime.probe_cdp
     assert browser_compat.launch_managed_browser is browser_runtime.launch_managed_browser
     assert browser_compat.import_existing_browser_to_cdp is browser_runtime.import_existing_browser_to_cdp
+
+
+def test_domain_discovery_owns_platform_specific_resource_shapes() -> None:
+    processes = [
+        {"Name": "chrome.exe", "ProcessId": 10, "ExecutablePath": "C:/Chrome/chrome.exe", "CommandLine": "chrome.exe"},
+        {"Name": "WeChat.exe", "ProcessId": 20, "ExecutablePath": "C:/WeChat/WeChat.exe", "CommandLine": "WeChat.exe"},
+    ]
+    windows = {
+        10: [{"hwnd": 100, "title": "Chrome"}],
+        20: [{"hwnd": 200, "title": "WeChat"}],
+    }
+    browsers = discover_browser_resources(processes=processes, windows=windows)
+    wechats = discover_wechat_resources(processes=processes, windows=windows)
+    assert len(browsers) == 1 and browsers[0]["kind"] == "browser"
+    assert browsers[0]["attach_reason"] == "remote_debugging_not_enabled"
+    assert len(wechats) == 1 and wechats[0]["kind"] == "wechat"
+    assert wechats[0]["hwnd"] == 200
 
 
 def test_reply_routing_requires_explicit_source_chat() -> None:
