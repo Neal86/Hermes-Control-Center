@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from pathlib import Path
@@ -69,17 +70,52 @@ def _read_control_center_version() -> str:
         return "unknown"
 
 
+def _fetch_text(url: str, timeout: float = 2.5) -> str:
+    separator = "&" if "?" in url else "?"
+    fresh_url = f"{url}{separator}hcc_cb={int(__import__('time').time() * 1000)}"
+    req = UrlRequest(
+        fresh_url,
+        headers={
+            "Cache-Control": "no-cache, no-store, max-age=0",
+            "Pragma": "no-cache",
+            "User-Agent": "Hermes-Control-Center",
+            "Accept": "application/vnd.github+json, text/plain;q=0.9, */*;q=0.8",
+        },
+    )
+    with urlopen(req, timeout=timeout) as response:
+        return response.read().decode("utf-8", "replace")
+
+
 def _latest_control_center_version() -> str | None:
-    url = "https://raw.githubusercontent.com/Neal86/Hermes-Control-Center/main/plugin.yaml"
+    """Resolve main to an immutable SHA before reading plugin.yaml.
+
+    Reading raw.githubusercontent.com/.../main/plugin.yaml can briefly return a
+    cached older object after main moves. That made the dashboard report e.g.
+    Installed v0.8.32 / Latest v0.8.30. Pinning the raw read to the branch head
+    SHA makes the version badge consistent with GitHub's current main commit.
+    """
+    branch_api = "https://api.github.com/repos/Neal86/Hermes-Control-Center/branches/main"
+    fallback = "https://raw.githubusercontent.com/Neal86/Hermes-Control-Center/main/plugin.yaml"
     try:
-        req = UrlRequest(url, headers={"Cache-Control": "no-cache", "User-Agent": "Hermes-Control-Center"})
-        with urlopen(req, timeout=2.5) as response:
-            text = response.read().decode("utf-8", "replace")
+        branch = json.loads(_fetch_text(branch_api, timeout=2.5))
+        sha = str(((branch or {}).get("commit") or {}).get("sha") or "").strip()
+        if re.fullmatch(r"[0-9a-f]{40}", sha):
+            text = _fetch_text(
+                f"https://raw.githubusercontent.com/Neal86/Hermes-Control-Center/{sha}/plugin.yaml",
+                timeout=2.5,
+            )
+        else:
+            text = _fetch_text(fallback, timeout=2.5)
         match = re.search(r'(?m)^version:\s*["\']?([^\s"\']+)', text)
         return match.group(1).strip() if match else None
     except Exception as exc:
         logger.debug("[ControlCenter] latest version check failed: %s", exc)
-        return None
+        try:
+            text = _fetch_text(fallback, timeout=2.5)
+            match = re.search(r'(?m)^version:\s*["\']?([^\s"\']+)', text)
+            return match.group(1).strip() if match else None
+        except Exception:
+            return None
 
 
 def _version_tuple(value: str) -> tuple[int, ...]:
@@ -93,12 +129,24 @@ def _version_tuple(value: str) -> tuple[int, ...]:
 def version_status() -> dict[str, Any]:
     installed = _read_control_center_version()
     latest = _latest_control_center_version()
-    update_available = bool(latest and _version_tuple(latest) > _version_tuple(installed))
+    installed_tuple = _version_tuple(installed)
+    latest_tuple = _version_tuple(latest or "")
+    update_available = bool(latest and latest_tuple > installed_tuple)
+    local_ahead = bool(latest and installed_tuple > latest_tuple)
     return {
         "installed": installed,
         "latest": latest,
         "update_available": update_available,
-        "status": "update_available" if update_available else ("up_to_date" if latest else "unknown"),
+        "local_ahead": local_ahead,
+        "status": (
+            "update_available"
+            if update_available
+            else "local_ahead"
+            if local_ahead
+            else "up_to_date"
+            if latest
+            else "unknown"
+        ),
     }
 
 
