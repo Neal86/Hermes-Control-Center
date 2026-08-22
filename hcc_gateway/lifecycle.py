@@ -71,15 +71,16 @@ def _management_center_class():
     return ManagementCenter
 
 
-def install_independent_gateway_policy() -> None:
+def install_independent_gateway_policy(management_center_class=None) -> None:
     """Make every Control Center Agent use its own real Gateway profile."""
     global _INSTALLED, _CONFIG_CHANGED
-    if _INSTALLED:
-        return
 
     root = _root_hermes_home()
-    _CONFIG_CHANGED = _persist_independent_gateway_config(root)
-    ManagementCenter = _management_center_class()
+    config_changed = _persist_independent_gateway_config(root)
+    _CONFIG_CHANGED = _CONFIG_CHANGED or config_changed
+    ManagementCenter = management_center_class or _management_center_class()
+    if getattr(ManagementCenter, "_hcc_independent_gateway_policy_installed", False):
+        return
     original_action = ManagementCenter.agent_action
 
     def independent_env_for(self, name: str | None) -> dict[str, str]:
@@ -123,4 +124,5 @@ def install_independent_gateway_policy() -> None:
     ManagementCenter._env_for = independent_env_for
     ManagementCenter._gateway_multiplexes_profiles = never_multiplex
     ManagementCenter.agent_action = independent_agent_action
+    ManagementCenter._hcc_independent_gateway_policy_installed = True
     _INSTALLED = True

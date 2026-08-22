@@ -41,3 +41,17 @@ def test_dashboard_write_bodies_forbid_unknown_fields() -> None:
     api = load_dashboard_api()
     with pytest.raises(ValidationError):
         api.AgentBody(name="support", unexpected="should-fail")
+
+
+def test_dashboard_dynamic_management_center_gets_independent_gateway_policy(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("gateway:\n  multiplex_profiles: true\n", "utf-8")
+
+    api = load_dashboard_api()
+
+    assert getattr(api.ManagementCenter, "_hcc_independent_gateway_policy_installed", False) is True
+    assert api.ManagementCenter._gateway_multiplexes_profiles(object()) is False
+    assert "multiplex_profiles: false" in config_path.read_text("utf-8")

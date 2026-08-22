@@ -36,6 +36,10 @@ TaskCenter = _load_module(
 ManagementCenter = _load_module(
     "management/service.py", "hermes_extensions_management_service"
 ).ManagementCenter
+gateway_lifecycle = _load_module(
+    "hcc_gateway/lifecycle.py", "hermes_extensions_dashboard_gateway_lifecycle"
+)
+gateway_lifecycle.install_independent_gateway_policy(ManagementCenter)
 WeChatDesktop = _load_module(
     "wechat/runtime.py", "hermes_extensions_dashboard_wechat_runtime"
 ).WeChatDesktop
