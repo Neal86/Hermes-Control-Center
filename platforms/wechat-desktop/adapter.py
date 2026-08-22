@@ -50,17 +50,17 @@ logger = legacy.logger
 
 
 class _BoundFactory:
+    agent = "default"
+
     @staticmethod
     def available() -> bool:
         try:
-            agent = current_agent()
-            ResourceBindings().require(agent, "wechat", ready=True)
             return bool(BoundWeChatDesktop.available())
         except Exception:
             return False
 
     def __new__(cls):
-        return BoundWeChatDesktop(current_agent())
+        return BoundWeChatDesktop(cls.agent or current_agent())
 
 
 legacy._load_desktop_class = lambda: _BoundFactory
@@ -77,6 +77,7 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
     """
 
     def __init__(self, config):
+        _BoundFactory.agent = str((config.extra or {}).get("bound_agent") or current_agent()).strip().lower()
         super().__init__(config)
         self.allowed_chats = set()
         self._preview_seen: dict[str, str] = {}
@@ -520,7 +521,16 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
 # legacy.register resolves this global when it creates the adapter factory.
 legacy.WeChatDesktopPlatformAdapter = WeChatDesktopPlatformAdapter
 check_requirements = legacy.check_requirements
-validate_config = legacy.validate_config
+
+
+def validate_config(config) -> bool:
+    try:
+        agent = str((config.extra or {}).get("bound_agent") or current_agent()).strip().lower()
+        ResourceBindings().require(agent, "wechat", ready=True)
+        return check_requirements()
+    except Exception as exc:
+        logger.error("WeChat Desktop configuration validation failed: %s", exc)
+        return False
 
 
 def register(ctx):

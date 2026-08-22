@@ -110,7 +110,29 @@ class ResourceBindings:
             )
         row = rows[0]
         if not row.get("online"):
-            raise ResourceAccessError(f"Agent '{agent}' bound {kind} resource is offline")
+            # Desktop window ids include the process/window handle and therefore
+            # change when an app is restarted. Recover only when there is exactly
+            # one unambiguous live replacement of the same kind; with multiple
+            # candidates the user must explicitly choose one in Control Center.
+            bindings = self._read()
+            live = [
+                candidate
+                for candidate in self.registry.list(refresh=False)
+                if candidate.get("kind") == kind
+                and candidate.get("online")
+                and (not ready or candidate.get("status") == "ready")
+                and not bindings.get(str(candidate.get("id")))
+            ]
+            if len(live) == 1:
+                replacement = live[0]
+                bindings.pop(str(row.get("id")), None)
+                bindings[str(replacement["id"])] = agent
+                self._write(bindings)
+                return dict(replacement, assigned_agent=agent, rebound_from=str(row.get("id")))
+            raise ResourceAccessError(
+                f"Agent '{agent}' bound {kind} resource is offline; "
+                f"found {len(live)} unbound live replacement(s)"
+            )
         if ready and row.get("status") != "ready":
             raise ResourceAccessError(f"Agent '{agent}' bound {kind} resource is not ready")
         return row

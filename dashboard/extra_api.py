@@ -238,10 +238,11 @@ def _configure_wechat_gateway(
     *,
     enabled: bool,
 ) -> dict[str, Any]:
-    management._set_config(agent, "platforms.wechat_desktop.enabled", "true" if enabled else "false")
+    config_profile = "default" if management._gateway_multiplexes_profiles() else agent
+    management._set_config(config_profile, "platforms.wechat_desktop.enabled", "true" if enabled else "false")
     if enabled:
-        management._set_config(agent, "platforms.wechat_desktop.extra.bound_agent", agent)
-        management._set_config(agent, "platforms.wechat_desktop.extra.bound_resource_id", resource_id)
+        management._set_config(config_profile, "platforms.wechat_desktop.extra.bound_agent", agent)
+        management._set_config(config_profile, "platforms.wechat_desktop.extra.bound_resource_id", resource_id)
     if not _gateway_is_running(management, agent):
         return {"ok": True, "skipped": True, "reason": "gateway_not_running"}
     restart = management.agent_action(agent, "gateway_restart")
