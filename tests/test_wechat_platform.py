@@ -107,13 +107,13 @@ def test_configured_group_chat_is_routed_as_group() -> None:
     assert adapter._chat_type("Alex") == "dm"
 
 
-def test_read_preview_is_baselined_once_then_changes_are_processed() -> None:
+def test_unknown_direction_is_not_silently_dropped() -> None:
     module = load_platform_module()
-    row = types.SimpleNamespace(unread=False)
-    check = module.WeChatDesktopPlatformAdapter._baseline_only
-    assert check(row, None) is True
-    assert check(row, ("old-preview", 1.0)) is False
-    assert check(types.SimpleNamespace(unread=True), None) is False
+    rows = [
+        {"message_id": "1", "text": "hello", "direction": "unknown"},
+        {"message_id": "2", "text": "more", "direction": "inbound"},
+    ]
+    assert [row["message_id"] for row in module.WeChatDesktopPlatformAdapter._trailing_inbound(rows)] == ["1", "2"]
 
 
 def test_poll_failures_become_degraded_and_back_off() -> None:
