@@ -1,41 +1,84 @@
-from resources.bindings import ResourceAccessError, ResourceBindings
+from resources.bindings import ResourceAccessError
+from wechat.binding import WeChatBindingService
 
 
-def _bindings(tmp_path, resources):
-    bindings = ResourceBindings(tmp_path)
-    bindings._write({"wechat:old": "11"})
-    bindings.registry.refresh = lambda: resources
-    bindings.registry.list = lambda refresh=False: resources
-    return bindings
+def _service(tmp_path, resources):
+    service = WeChatBindingService(tmp_path)
+    service.bindings._write({"wechat:old": "11"})
+    service.bindings.registry.refresh = lambda: resources
+    service.bindings.registry.list = lambda refresh=False: resources
+    service._remember(
+        "11",
+        {
+            "id": "wechat:old",
+            "kind": "wechat",
+            "app": "wechat",
+            "exe": "c:/wechat/wechat.exe",
+            "title": "WeChat",
+            "online": False,
+            "status": "offline",
+        },
+    )
+    return service
 
 
-def test_require_recovers_unique_live_replacement(tmp_path):
+def _row(resource_id, *, online, status="ready"):
+    return {
+        "id": resource_id,
+        "kind": "wechat",
+        "app": "wechat",
+        "exe": "c:/wechat/wechat.exe",
+        "title": "WeChat",
+        "online": online,
+        "status": status,
+    }
+
+
+def test_require_recovers_unique_compatible_live_replacement(tmp_path):
     resources = [
-        {"id": "wechat:old", "kind": "wechat", "online": False, "status": "offline"},
-        {"id": "wechat:new", "kind": "wechat", "online": True, "status": "ready"},
+        _row("wechat:old", online=False, status="offline"),
+        _row("wechat:new", online=True),
     ]
-    bindings = _bindings(tmp_path, resources)
+    service = _service(tmp_path, resources)
 
-    resource = bindings.require("11", "wechat", ready=True)
+    resource = service.require("11", ready=True)
 
     assert resource["id"] == "wechat:new"
     assert resource["rebound_from"] == "wechat:old"
-    assert bindings.list() == {"wechat:new": "11"}
+    assert service.bindings.list() == {"wechat:new": "11"}
 
 
 def test_require_does_not_guess_between_multiple_live_replacements(tmp_path):
     resources = [
-        {"id": "wechat:old", "kind": "wechat", "online": False, "status": "offline"},
-        {"id": "wechat:a", "kind": "wechat", "online": True, "status": "ready"},
-        {"id": "wechat:b", "kind": "wechat", "online": True, "status": "ready"},
+        _row("wechat:old", online=False, status="offline"),
+        _row("wechat:a", online=True),
+        _row("wechat:b", online=True),
     ]
-    bindings = _bindings(tmp_path, resources)
+    service = _service(tmp_path, resources)
 
     try:
-        bindings.require("11", "wechat", ready=True)
+        service.require("11", ready=True)
     except ResourceAccessError as exc:
-        assert "found 2 unbound live replacement(s)" in str(exc)
+        assert "found 2 compatible unbound live replacement(s)" in str(exc)
     else:
         raise AssertionError("ambiguous replacement must fail closed")
 
-    assert bindings.list() == {"wechat:old": "11"}
+    assert service.bindings.list() == {"wechat:old": "11"}
+
+
+def test_require_does_not_resurrect_explicitly_unbound_wechat(tmp_path):
+    resources = [
+        _row("wechat:old", online=False, status="offline"),
+        _row("wechat:new", online=True),
+    ]
+    service = _service(tmp_path, resources)
+    service.bindings.unbind("wechat:old")
+
+    try:
+        service.require("11", ready=True)
+    except ResourceAccessError:
+        pass
+    else:
+        raise AssertionError("explicit unbind must not recover automatically")
+
+    assert service.bindings.list() == {}
