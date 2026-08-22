@@ -20,6 +20,7 @@ if str(CONTROL_CENTER_ROOT) not in sys.path:
 from resources.context import current_agent, root_hermes_home  # noqa: E402
 from resources.wechat_bound import BoundWeChatDesktop  # noqa: E402
 from wechat.binding import WeChatBindingService  # noqa: E402
+from wechat.db_receiver import DatabaseReceiver  # noqa: E402
 from wechat.receiver import (  # noqa: E402
     compact_context,
     group_mentions_me,
@@ -94,6 +95,9 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
         self.receiver_state = ReceiverState(self.bound_agent)
         self._preview_seen = self.receiver_state.previews
         self._baseline_complete = False
+        self.bound_resource = WeChatBindingService().require(self.bound_agent, ready=True)
+        self.db_receiver = DatabaseReceiver(self.bound_resource)
+        self._db_primary = False
         self.sender = WeChatSender(self.desktop)
         self._health_path = (
             root_hermes_home()
@@ -190,20 +194,43 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
             self._write_health()
             return False
         try:
-            await self._seed_startup_baseline()
+            db_status = await asyncio.to_thread(self.db_receiver.connect)
+            self._db_primary = True
+            logger.info(
+                "WECHAT_DB_RECEIVER_READY agent=%s account=%s backend=%s schema=%s capabilities=%s",
+                self.bound_agent,
+                db_status.account_id,
+                db_status.backend,
+                db_status.schema_fingerprint[:16],
+                ",".join(db_status.capabilities),
+            )
         except Exception as exc:
-            self._health = "failed"
-            self._last_error = f"startup baseline failed: {exc}"
-            self._write_health()
-            logger.exception("WeChat startup baseline failed")
-            return False
+            self._db_primary = False
+            logger.warning(
+                "WECHAT_DB_RECEIVER_FALLBACK agent=%s reason=%s; using UIA receive fallback",
+                self.bound_agent,
+                exc,
+            )
+            try:
+                await self._seed_startup_baseline()
+            except Exception as baseline_exc:
+                self._health = "failed"
+                self._last_error = f"startup baseline failed: {baseline_exc}"
+                self._write_health()
+                logger.exception("WeChat startup baseline failed")
+                return False
         self._health = "healthy"
         self._last_success_at = legacy.datetime.now(legacy.UTC)
         self._write_health()
         self._mark_connected()
         if self._poll_task is None or self._poll_task.done():
-            self._poll_task = asyncio.create_task(self._poll_loop())
+            target = self._db_poll_loop() if self._db_primary else self._poll_loop()
+            self._poll_task = asyncio.create_task(target)
         return True
+
+    async def disconnect(self) -> None:
+        await super().disconnect()
+        await asyncio.to_thread(self.db_receiver.close)
 
     async def _inspect_candidate(self, row, *, chat: str, preview: str, previous_preview: str | None) -> None:
         unread = bool(getattr(row, "unread", False))
@@ -405,6 +432,84 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
             mentioned_me=preview_mentions_me,
         )
 
+    async def _deliver_db_event(self, event) -> None:
+        if event.is_self:
+            self.receiver_state.commit_db_cursor(event.conversation_id, event.sort_seq)
+            logger.info(
+                "WECHAT_DB_RECEIVE_DECISION conversation=%r message_id=%s decision=SKIP reason=self_outbound",
+                event.conversation_name, event.message_id,
+            )
+            return
+        if event.conversation_type == "group" and self.require_mention and not event.mentioned_me:
+            self.receiver_state.commit_db_cursor(event.conversation_id, event.sort_seq)
+            logger.info(
+                "WECHAT_DB_RECEIVE_DECISION conversation=%r message_id=%s decision=SKIP reason=group_without_mention sender=%r",
+                event.conversation_name, event.message_id, event.sender_name,
+            )
+            return
+        if not str(event.content or "").strip():
+            self.receiver_state.commit_db_cursor(event.conversation_id, event.sort_seq)
+            return
+        source = self.build_source(
+            chat_id=event.conversation_id,
+            chat_name=event.conversation_name,
+            chat_type=event.conversation_type,
+            user_id=event.sender_id,
+            user_name=event.sender_name,
+        )
+        gateway_event = legacy.MessageEvent(
+            text=event.content,
+            message_type=legacy.MessageType.TEXT,
+            source=source,
+            message_id=f"wechat-db-{event.message_id}",
+            raw_message={
+                "account_id": event.account_id,
+                "conversation_id": event.conversation_id,
+                "conversation_name": event.conversation_name,
+                "source_chat_id": event.conversation_id,
+                "chat_type": event.conversation_type,
+                "sender_id": event.sender_id,
+                "sender": event.sender_name,
+                "message_id": event.message_id,
+                "message_type": event.message_type,
+                "mentioned_me": event.mentioned_me,
+                "is_self": False,
+                "direction": "inbound",
+                "transport": "wechat-db-primary",
+                "reply_route": "source_conversation_id_only",
+            },
+            timestamp=event.timestamp,
+        )
+        await self.handle_message(gateway_event)
+        self.receiver_state.commit_db_cursor(event.conversation_id, event.sort_seq)
+        logger.info(
+            "WECHAT_DB_RECEIVE_DECISION conversation=%r message_id=%s decision=DELIVER reason=%s sender=%r",
+            event.conversation_name,
+            event.message_id,
+            "group_mentioned_me" if event.conversation_type == "group" else "dm_new_message",
+            event.sender_name,
+        )
+
+    async def _db_poll_loop(self) -> None:
+        while self._running:
+            sleep_for = self.poll_seconds
+            try:
+                events, seed = await asyncio.to_thread(
+                    self.db_receiver.poll,
+                    self.receiver_state.db_cursors,
+                    (self.mention_name,),
+                )
+                if seed:
+                    self.receiver_state.commit_db_cursors(seed)
+                for event in events:
+                    await self._deliver_db_event(event)
+                self._poll_success()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                sleep_for = self._poll_failure(exc)
+            await asyncio.sleep(sleep_for)
+
     async def _poll_loop(self) -> None:
         while self._running:
             sleep_for = self.poll_seconds
@@ -455,10 +560,22 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
     ):
         del reply_to, metadata
         chat = str(chat_id or "").strip()
+        target = self.db_receiver.conversation_name(chat) if self._db_primary else chat
+        sent_wall = time.time()
         try:
-            result = await asyncio.to_thread(self.sender.send, chat, content)
+            result = await asyncio.to_thread(self.sender.send, target, content)
         except Exception as exc:
             return legacy.SendResult(success=False, error=str(exc))
+        if self._db_primary:
+            verified = await asyncio.to_thread(
+                self.db_receiver.verify_outbound,
+                chat,
+                content,
+                after_epoch=sent_wall,
+                timeout=8.0,
+            )
+            if not verified:
+                return legacy.SendResult(success=False, error=f"WeChat DB did not verify outbound delivery to {target}")
         now = time.monotonic()
         self._recent_outbound[chat] = (result["fingerprint"], now)
         self.receiver_state.remember_outbound(chat, result["fingerprint"])
