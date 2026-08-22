@@ -8,8 +8,11 @@ from .compatibility import detect_capabilities, install_hermes_cli_compat
 install_hermes_cli_compat()
 
 from . import schemas, tools  # noqa: E402
+from .gateway_isolation import install_independent_gateway_policy  # noqa: E402
 from .resources import tools as resource_tools  # noqa: E402
 from .resources.policy import pre_tool_call as resource_pre_tool_call  # noqa: E402
+
+install_independent_gateway_policy()
 
 ToolSpec = tuple[str, dict[str, Any], Any]
 
