@@ -59,3 +59,11 @@ def test_receiver_state_persists_preview_cursor(tmp_path: Path) -> None:
     changed, previous, current = second.preview_changed("Alex", "hello")
     assert changed is False
     assert previous == current == fingerprint
+
+
+def test_receiver_state_persists_outbound_echo_across_restart(tmp_path: Path) -> None:
+    path = tmp_path / "receiver.json"
+    first = ReceiverState("agent-a", path)
+    first.remember_outbound("Alex", "reply-fingerprint")
+    second = ReceiverState("agent-a", path)
+    assert second.recent_outbound("Alex", "reply-fingerprint", ttl=60.0)
