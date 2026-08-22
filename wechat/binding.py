@@ -6,8 +6,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from resources.bindings import ResourceAccessError, ResourceBindings
-from resources.context import root_hermes_home
+try:  # plugin package import
+    from ..resources.bindings import ResourceAccessError, ResourceBindings
+    from ..resources.context import root_hermes_home
+except (ImportError, ValueError):  # source/platform import
+    from resources.bindings import ResourceAccessError, ResourceBindings
+    from resources.context import root_hermes_home
 
 from .identity import compatible_resource, normalize_agent, resource_hints, stable_binding_id
 
@@ -64,6 +68,34 @@ class WeChatBindingService:
         self._write(records)
         return record
 
+    def _legacy_record(self, agent: str, ownership: dict[str, str]) -> dict[str, Any] | None:
+        """Build a migration record only from one unambiguous legacy binding."""
+        bound_ids = [resource_id for resource_id, owner in ownership.items() if owner == agent]
+        if len(bound_ids) != 1:
+            return None
+        old_runtime = bound_ids[0]
+        old = next(
+            (
+                row
+                for row in self.bindings.registry.list(refresh=False)
+                if str(row.get("id") or "") == old_runtime
+                and str(row.get("kind") or "").strip().lower() == "wechat"
+            ),
+            None,
+        )
+        if not old:
+            return None
+        return {
+            "binding_id": stable_binding_id(agent),
+            "agent": agent,
+            "kind": "wechat",
+            "runtime_resource_id": old_runtime,
+            "hints": resource_hints(old),
+            "needs_rebind": False,
+            "candidate_count": 0,
+            "migrated_from_legacy": True,
+        }
+
     def bind(self, resource_id: str, agent: str) -> dict[str, Any]:
         agent = normalize_agent(agent)
         result = self.bindings.bind(resource_id, agent)
@@ -90,13 +122,18 @@ class WeChatBindingService:
         except ResourceAccessError as direct_error:
             records = self._read()
             key = stable_binding_id(agent)
+            ownership = self.bindings.list()
             record = records.get(key)
             if not record:
-                # Legacy state has no safe restart-stable hints yet. Do not guess
-                # among multiple WeChat windows merely to manufacture a migration.
-                raise direct_error
+                # Upgrade path: one legacy bound WeChat may seed restart-stable
+                # hints from its persisted offline resource row. Multiple legacy
+                # bindings or missing metadata remain fail-closed.
+                record = self._legacy_record(agent, ownership)
+                if not record:
+                    raise direct_error
+                records[key] = record
+                self._write(records)
 
-        ownership = self.bindings.list()
         old_runtime = str(record.get("runtime_resource_id") or "")
         # If the compatibility binding was explicitly removed, that is an unbind,
         # not a restart. Never resurrect a deliberately removed relationship.
