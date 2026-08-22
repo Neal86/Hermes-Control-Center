@@ -5,6 +5,7 @@ import ctypes.wintypes as wt
 import hashlib
 import hmac
 import os
+import re
 import sqlite3
 import struct
 import tempfile
@@ -225,8 +226,46 @@ def _decode(value) -> str:
     if value is None:
         return ""
     if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace").strip("\x00")
+        try:
+            return value.decode("utf-8").strip("\x00")
+        except UnicodeDecodeError:
+            return ""
     return str(value)
+
+
+def _container_text(value) -> str:
+    """Recover readable UTF-8 text from WCDB message containers; fail closed otherwise."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip("\x00")
+    if not isinstance(value, (bytes, bytearray, memoryview)):
+        return str(value)
+    content = bytes(value)
+    try:
+        direct = content.decode("utf-8").strip("\x00")
+        if direct and sum(ch.isprintable() for ch in direct) / max(1, len(direct)) >= 0.8:
+            return direct
+    except UnicodeDecodeError:
+        pass
+    offsets = [10] + [index for index in range(min(16, len(content))) if index != 10]
+    for offset in offsets:
+        chunk = content[offset:]
+        marker = chunk.find(b"\x01\x00")
+        if marker >= 0:
+            chunk = chunk[:marker]
+        try:
+            text = chunk.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+", "", text).strip()
+        if not text:
+            continue
+        printable = sum(ch.isprintable() or ch in "\n\t" for ch in text) / len(text)
+        useful = any(ch.isalnum() or "\u4e00" <= ch <= "\u9fff" or ch in "@<" for ch in text)
+        if printable >= 0.75 and useful:
+            return text
+    return ""
 
 
 class WeChat4SqlcipherBackend(ReceiverBackend):
@@ -296,17 +335,21 @@ class WeChat4SqlcipherBackend(ReceiverBackend):
         return connection
 
     def _refresh_metadata(self) -> None:
+        connection = None
         try:
-            with self._connect(Path("contact/contact.db")) as connection:
-                names: dict[str, str] = {}
-                for row in connection.execute("select username, remark, nick_name, alias from contact"):
-                    username = _decode(row["username"])
-                    display = _decode(row["remark"]) or _decode(row["nick_name"]) or _decode(row["alias"]) or username
-                    if username:
-                        names[username] = display
-                self._contact_names = names
+            connection = self._connect(Path("contact/contact.db"))
+            names: dict[str, str] = {}
+            for row in connection.execute("select username, remark, nick_name, alias from contact"):
+                username = _decode(row["username"])
+                display = _decode(row["remark"]) or _decode(row["nick_name"]) or _decode(row["alias"]) or username
+                if username:
+                    names[username] = display
+            self._contact_names = names
         except Exception:
             self._contact_names = {}
+        finally:
+            if connection is not None:
+                connection.close()
 
     def status(self) -> BackendStatus:
         return BackendStatus(
@@ -319,10 +362,13 @@ class WeChat4SqlcipherBackend(ReceiverBackend):
 
     def _sessions(self) -> list[dict]:
         self._refresh_metadata()
-        with self._connect(Path("session/session.db")) as connection:
+        connection = self._connect(Path("session/session.db"))
+        try:
             return [dict(row) for row in connection.execute(
                 "select username, unread_count, last_timestamp, last_msg_locald_id, last_msg_sender, last_sender_display_name from SessionTable"
             )]
+        finally:
+            connection.close()
 
     def _table_name(self, conversation_id: str) -> str:
         return "Msg_" + hashlib.md5(conversation_id.encode("utf-8")).hexdigest()
@@ -370,7 +416,7 @@ class WeChat4SqlcipherBackend(ReceiverBackend):
             senders = self._sender_map(connection)
             select = (
                 f'select local_id, server_id, local_type, sort_seq, real_sender_id, create_time, status, '
-                f'message_content, source from "{table}"'
+                f'message_content, source, WCDB_CT_message_content, WCDB_CT_source from "{table}"'
             )
             params: tuple = ()
             if after is not None:
@@ -393,13 +439,17 @@ class WeChat4SqlcipherBackend(ReceiverBackend):
     def conversation_name(self, conversation_id: str) -> str:
         if conversation_id in self._contact_names:
             return self._contact_names[conversation_id]
+        connection = None
         try:
-            with self._connect(Path("session/session.db")) as connection:
-                row = connection.execute("select session_title from SessionNoContactInfoTable where username=?", (conversation_id,)).fetchone()
-                if row and _decode(row[0]):
-                    return _decode(row[0])
+            connection = self._connect(Path("session/session.db"))
+            row = connection.execute("select session_title from SessionNoContactInfoTable where username=?", (conversation_id,)).fetchone()
+            if row and _decode(row[0]):
+                return _decode(row[0])
         except sqlite3.DatabaseError:
             pass
+        finally:
+            if connection is not None:
+                connection.close()
         return conversation_id
 
     @staticmethod
@@ -411,9 +461,11 @@ class WeChat4SqlcipherBackend(ReceiverBackend):
         if not sender_id:
             sender_id = conversation_id
         is_self = sender_id == self.wxid
-        content = _decode(row.get("message_content"))
-        source = _decode(row.get("source"))
+        content = _container_text(row.get("message_content"))
+        source = _container_text(row.get("source"))
         conversation_type = "group" if conversation_id.endswith("@chatroom") else "dm"
+        if conversation_type == "group" and sender_id and content.startswith(sender_id + ":\n"):
+            content = content[len(sender_id) + 2 :].lstrip()
         mentioned = False
         if conversation_type == "group":
             source_lower = source.lower()
@@ -478,11 +530,16 @@ class WeChat4SqlcipherBackend(ReceiverBackend):
             for row in reversed(rows):
                 sender_id = _decode(row.get("sender_id"))
                 created = float(row.get("create_time") or 0)
-                if sender_id == self.wxid and created + 2 >= float(after_epoch) and _decode(row.get("message_content")).strip() == expected:
+                if sender_id == self.wxid and created + 2 >= float(after_epoch) and _container_text(row.get("message_content")).strip() == expected:
                     return True
             time.sleep(0.25)
         return False
 
     def close(self) -> None:
+        self._conversation_db = {}
+        self._snapshot_signatures = {}
         self._master_key = bytes(len(self._master_key))
-        self._temp.cleanup()
+        try:
+            self._temp.cleanup()
+        except PermissionError:
+            pass
