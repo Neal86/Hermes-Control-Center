@@ -15,6 +15,12 @@ class ResourceAccessError(RuntimeError):
 
 
 class ResourceBindings:
+    """Compatibility store for runtime resource ownership.
+
+    Domain-specific restart recovery belongs to wechat.binding/browser.binding;
+    this class preserves the existing Dashboard/API contract.
+    """
+
     def __init__(self, root: Path | None = None) -> None:
         self.root = (root or root_hermes_home() / "plugin-data" / "hermes-extensions" / "resources").expanduser()
         self.root.mkdir(parents=True, exist_ok=True)
@@ -54,16 +60,11 @@ class ResourceBindings:
         agent = str(agent or "").strip().lower()
         if not agent:
             raise ValueError("agent is required")
-
         kind = str(resource.get("kind") or "").strip().lower()
         if not kind:
             raise ValueError("desktop resource has no kind")
 
         bindings = self._read()
-        # Exact ownership: one resource belongs to at most one Agent, and one
-        # Agent has at most one resource of each kind. Rebinding a new browser
-        # or WeChat instance atomically replaces that Agent's previous same-kind
-        # binding so runtime resolution is deterministic.
         rows = {str(row.get("id")): row for row in self.registry.list(refresh=False)}
         replaced: list[str] = []
         for existing_id, existing_agent in list(bindings.items()):
@@ -73,14 +74,9 @@ class ResourceBindings:
             if existing and str(existing.get("kind") or "").strip().lower() == kind:
                 bindings.pop(existing_id, None)
                 replaced.append(existing_id)
-
         bindings[resource_id] = agent
         self._write(bindings)
-        return {
-            "resource": dict(resource, assigned_agent=agent),
-            "agent": agent,
-            "replaced": replaced,
-        }
+        return {"resource": dict(resource, assigned_agent=agent), "agent": agent, "replaced": replaced}
 
     def unbind(self, resource_id: str) -> bool:
         bindings = self._read()
@@ -110,10 +106,11 @@ class ResourceBindings:
             )
         row = rows[0]
         if not row.get("online"):
-            # Desktop window ids include the process/window handle and therefore
-            # change when an app is restarted. Recover only when there is exactly
-            # one unambiguous live replacement of the same kind; with multiple
-            # candidates the user must explicitly choose one in Control Center.
+            # WeChat recovery is intentionally delegated to WeChatBindingService,
+            # which has restart-stable hints and can fail closed on ambiguity.
+            if str(kind).strip().lower() == "wechat":
+                raise ResourceAccessError(f"Agent '{agent}' bound wechat resource is offline")
+
             bindings = self._read()
             live = [
                 candidate
@@ -130,8 +127,7 @@ class ResourceBindings:
                 self._write(bindings)
                 return dict(replacement, assigned_agent=agent, rebound_from=str(row.get("id")))
             raise ResourceAccessError(
-                f"Agent '{agent}' bound {kind} resource is offline; "
-                f"found {len(live)} unbound live replacement(s)"
+                f"Agent '{agent}' bound {kind} resource is offline; found {len(live)} unbound live replacement(s)"
             )
         if ready and row.get("status") != "ready":
             raise ResourceAccessError(f"Agent '{agent}' bound {kind} resource is not ready")
