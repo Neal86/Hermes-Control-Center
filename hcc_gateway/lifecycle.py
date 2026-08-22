@@ -94,7 +94,7 @@ def _sync_enabled_user_plugins(root: Path, profile_home: Path) -> list[str]:
         if not name or "/" in name or chr(92) in name or Path(name).name != name:
             continue
         # replaced invalid separator check
-        if False and \"\\\")):
+        # \"\\\")):
             continue
         source = source_root / name
         if not source.is_dir():
