@@ -41,13 +41,30 @@ def _persist_independent_gateway_config(root: Path) -> bool:
             parsed = yaml.safe_load(path.read_text("utf-8"))
             if isinstance(parsed, dict):
                 payload = parsed
+
+        changed = False
         gateway = payload.get("gateway")
         if not isinstance(gateway, dict):
             gateway = {}
             payload["gateway"] = gateway
-        if gateway.get("multiplex_profiles") is False:
+        if gateway.get("multiplex_profiles") is not False:
+            gateway["multiplex_profiles"] = False
+            changed = True
+
+        # A pre-isolation WeChat binding lived in the root/default config even
+        # when it belonged to another Agent. Once gateways are independent,
+        # leaving that platform enabled makes default and the bound Agent open
+        # the same WeChat resource. Disable only that stale non-default binding.
+        platforms = payload.get("platforms")
+        wechat = platforms.get("wechat_desktop") if isinstance(platforms, dict) else None
+        extra = wechat.get("extra") if isinstance(wechat, dict) else None
+        bound_agent = str(extra.get("bound_agent") or "").strip().lower() if isinstance(extra, dict) else ""
+        if bound_agent and bound_agent != "default" and isinstance(wechat, dict) and wechat.get("enabled") is not False:
+            wechat["enabled"] = False
+            changed = True
+
+        if not changed:
             return False
-        gateway["multiplex_profiles"] = False
         root.mkdir(parents=True, exist_ok=True)
         fd, temp_name = tempfile.mkstemp(prefix="config.gateway-isolation.", suffix=".yaml", dir=str(root))
         try:

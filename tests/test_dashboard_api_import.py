@@ -82,3 +82,25 @@ def test_isolated_profile_inherits_only_enabled_root_user_plugins(tmp_path: Path
     assert (profile / "plugins" / "hermes-extensions" / "plugin.yaml").is_file()
     assert (profile / "plugins" / "wechat-desktop" / "plugin.yaml").is_file()
     assert not (profile / "plugins" / "disabled-plugin").exists()
+
+
+def test_independent_gateway_config_disables_stale_default_wechat_binding(tmp_path: Path) -> None:
+    lifecycle_path = ROOT / "hcc_gateway" / "lifecycle.py"
+    spec = importlib.util.spec_from_file_location("hx_gateway_migration_test", lifecycle_path)
+    assert spec and spec.loader
+    lifecycle = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lifecycle)
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    config_path = root / "config.yaml"
+    config_path.write_text(
+        "gateway:\n  multiplex_profiles: false\nplatforms:\n  wechat_desktop:\n    enabled: true\n    extra:\n      bound_agent: 11\n      bound_resource_id: wechat:test\n",
+        "utf-8",
+    )
+
+    assert lifecycle._persist_independent_gateway_config(root) is True
+    payload = lifecycle.yaml.safe_load(config_path.read_text("utf-8"))
+    assert payload["gateway"]["multiplex_profiles"] is False
+    assert payload["platforms"]["wechat_desktop"]["enabled"] is False
+    assert payload["platforms"]["wechat_desktop"]["extra"]["bound_agent"] == 11
