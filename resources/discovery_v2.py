@@ -2,14 +2,22 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import discovery as legacy
+from browser.discovery import select_browser_resources
+from wechat.discovery import select_wechat_resources
+
+from . import discovery as windows_scan
 
 
 def discover_resources() -> list[dict[str, Any]]:
-    """Use the single canonical Windows discovery pass.
-
-    Chrome, Edge, iXBrowser and WeChat are all discovered by discovery.py.
-    Keeping one pass avoids a second CIM/EnumWindows scan on every Resources
-    refresh, which previously made the dashboard appear hung on Windows.
-    """
-    return legacy.discover_resources()
+    """Coordinate one shared Windows scan into isolated domain discoveries."""
+    rows = windows_scan.discover_resources()
+    resources = [*select_browser_resources(rows), *select_wechat_resources(rows)]
+    return sorted(
+        resources,
+        key=lambda item: (
+            str(item.get("kind") or ""),
+            str(item.get("app") or ""),
+            str(item.get("title") or "").lower(),
+            int(item.get("pid") or 0),
+        ),
+    )
