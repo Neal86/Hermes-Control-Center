@@ -87,6 +87,7 @@ def test_gateway_file_loader_can_import_hardened_runtime() -> None:
     module = load_platform_module()
     desktop = module.legacy._load_desktop_class()
     assert desktop is module._BoundFactory
+    assert not hasattr(module._BoundFactory, "agent")
     assert hasattr(module.BoundWeChatDesktop, "_ui_transaction")
 
 
