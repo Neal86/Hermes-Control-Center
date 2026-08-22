@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from browser.discovery import select_browser_resources
-from wechat.discovery import select_wechat_resources
+try:  # plugin package import
+    from ..browser.discovery import select_browser_resources
+    from ..wechat.discovery import select_wechat_resources
+except (ImportError, ValueError):  # source/dashboard import
+    from browser.discovery import select_browser_resources
+    from wechat.discovery import select_wechat_resources
 
 from . import discovery as windows_scan
 
