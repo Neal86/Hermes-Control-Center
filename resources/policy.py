@@ -49,6 +49,18 @@ def pre_tool_call(tool_name: str, args: dict[str, Any], task_id: str = "", **kwa
             ),
         }
 
+    if str(tool_name or "").strip().lower() == "clarify" and _agent_has_bound_wechat(agent):
+        return {
+            "action": "block",
+            "message": (
+                "Interactive clarify is unavailable in this WeChat customer-service session. "
+                "Do not wait for UI confirmation. If the user's request already contains the "
+                "information required for a read-only lookup, continue immediately with the "
+                "appropriate bound browser or lookup tool. If a required value is truly missing, "
+                "ask one concise question in your normal assistant reply instead of calling clarify."
+            ),
+        }
+
     if not _is_browser_tool(tool_name):
         return None
     try:
