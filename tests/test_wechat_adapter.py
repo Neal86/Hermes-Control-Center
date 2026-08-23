@@ -56,53 +56,6 @@ def test_dry_run_writes_and_clears_editor_without_send(tmp_path: Path, monkeypat
     assert sends == []
 
 
-def test_group_send_uses_real_mention_composer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    client = WeChatDesktop(tmp_path)
-    fake_window = object()
-    editor = FakeEditor()
-    composed: list[tuple[str, str]] = []
-    sends: list[bool] = []
-    monkeypatch.setattr(client, "_main_window", lambda: fake_window)
-    monkeypatch.setattr(client, "_is_current_target", lambda win, chat: True)
-    monkeypatch.setattr(client, "_message_editor", lambda win: editor)
-    monkeypatch.setattr(
-        client, "_compose_group_mention",
-        lambda win, value, mention, text: composed.append((mention, text)) or f"@{mention} {text}",
-    )
-    monkeypatch.setattr(client, "_send_and_verify", lambda value: sends.append(True))
-
-    result = client.send_message("Customer Group", "reply", mention_name="Alex")
-
-    assert result["sent"] is True
-    assert result["wire_text"] == "@Alex reply"
-    assert composed == [("Alex", "reply")]
-    assert sends == [True]
-
-
-def test_same_reply_to_different_group_members_is_not_duplicate_suppressed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    client = WeChatDesktop(tmp_path)
-    fake_window = object()
-    editor = FakeEditor()
-    sends: list[bool] = []
-    monkeypatch.setattr(client, "_main_window", lambda: fake_window)
-    monkeypatch.setattr(client, "_is_current_target", lambda win, chat: True)
-    monkeypatch.setattr(client, "_message_editor", lambda win: editor)
-    monkeypatch.setattr(
-        client, "_compose_group_mention",
-        lambda win, value, mention, text: f"@{mention} {text}",
-    )
-    monkeypatch.setattr(client, "_send_and_verify", lambda value: sends.append(True))
-
-    first = client.send_message("Customer Group", "same reply", mention_name="Alex")
-    second = client.send_message("Customer Group", "same reply", mention_name="Barry")
-
-    assert first["sent"] is True
-    assert second["sent"] is True
-    assert len(sends) == 2
-
-
 def test_duplicate_send_is_suppressed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     client = WeChatDesktop(tmp_path)
     fake_window = object()

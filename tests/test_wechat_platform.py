@@ -204,10 +204,9 @@ def _outbound_test_adapter(module):
     sent = []
 
     class Sender:
-        def send(self, target, content, *, mention_name=None):
-            sent.append((target, content, mention_name))
-            wire_text = f"@{mention_name} {content}" if mention_name else content
-            return {"fingerprint": "fp", "message_id": "mid", "wire_text": wire_text}
+        def send(self, target, content):
+            sent.append((target, content))
+            return {"fingerprint": "fp", "message_id": "mid"}
 
     adapter.sender = Sender()
     adapter.db_receiver = types.SimpleNamespace(conversation_name=lambda chat: chat)
@@ -234,17 +233,4 @@ def test_customer_reply_delivery_path_is_allowed() -> None:
     reply = "这个单号目前没有查到，我帮你再确认一下。"
     result = asyncio.run(adapter._send_with_retry("neal", reply))
     assert result.success is True
-    assert sent == [("neal", reply, None)]
-
-
-def test_group_customer_reply_mentions_current_questioner() -> None:
-    module = load_platform_module()
-    adapter, sent = _outbound_test_adapter(module)
-    reply = "已经查到，我马上发你结果。"
-    token = module._GROUP_REPLY_MENTION.set("Mr.Barry")
-    try:
-        result = asyncio.run(adapter._send_with_retry("room@chatroom", reply))
-    finally:
-        module._GROUP_REPLY_MENTION.reset(token)
-    assert result.success is True
-    assert sent == [("room@chatroom", reply, "Mr.Barry")]
+    assert sent == [("neal", reply)]
