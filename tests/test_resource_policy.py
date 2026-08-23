@@ -3,37 +3,18 @@ from __future__ import annotations
 from resources import policy
 
 
-def _bound_wechat(monkeypatch):
+def test_wechat_binding_does_not_block_clarify(monkeypatch):
     monkeypatch.setattr(policy, "current_agent", lambda: "11")
-    monkeypatch.setattr(policy, "_agent_has_bound_wechat", lambda agent: agent == "11")
+    assert policy.pre_tool_call("clarify", {"question": "Please confirm the order lookup"}) is None
 
 
-def test_wechat_bound_agent_blocks_interactive_clarify(monkeypatch):
-    _bound_wechat(monkeypatch)
-
-    result = policy.pre_tool_call(
-        "clarify",
-        {"question": "Please confirm the order lookup"},
-        task_id="task-1",
-    )
-
-    assert result is not None
-    assert result["action"] == "block"
-    message = result["message"]
-    assert "unavailable" in message.lower()
-    assert "continue immediately" in message.lower()
-    assert "normal assistant reply" in message.lower()
+def test_wechat_binding_does_not_block_computer_use(monkeypatch):
+    monkeypatch.setattr(policy, "current_agent", lambda: "11")
+    assert policy.pre_tool_call("computer_use", {"action": "click"}) is None
 
 
-def test_non_wechat_agent_keeps_clarify_available(monkeypatch):
-    monkeypatch.setattr(policy, "current_agent", lambda: "12")
-    monkeypatch.setattr(policy, "_agent_has_bound_wechat", lambda agent: False)
-
-    assert policy.pre_tool_call("clarify", {"question": "Need info"}) is None
-
-
-def test_wechat_bound_agent_browser_policy_still_applies(monkeypatch):
-    _bound_wechat(monkeypatch)
+def test_agent_browser_policy_still_applies(monkeypatch):
+    monkeypatch.setattr(policy, "current_agent", lambda: "11")
 
     class FakeBindings:
         def require(self, agent, kind, ready=True):
@@ -51,11 +32,15 @@ def test_wechat_bound_agent_browser_policy_still_applies(monkeypatch):
     assert policy.os.environ["HERMES_CONTROL_CENTER_BROWSER_RESOURCE"] == "browser:test"
 
 
-def test_wechat_bound_agent_computer_use_remains_blocked(monkeypatch):
-    _bound_wechat(monkeypatch)
+def test_browser_without_binding_still_fails_closed(monkeypatch):
+    monkeypatch.setattr(policy, "current_agent", lambda: "11")
 
-    result = policy.pre_tool_call("computer_use", {"action": "click"})
+    class MissingBindings:
+        def require(self, agent, kind, ready=True):
+            raise policy.ResourceAccessError("missing browser")
 
+    monkeypatch.setattr(policy, "ResourceBindings", MissingBindings)
+    result = policy.pre_tool_call("browser_exec", {"action": "read"})
     assert result is not None
     assert result["action"] == "block"
-    assert "blocked computer_use" in result["message"]
+    assert "missing browser" in result["message"]

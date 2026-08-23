@@ -55,6 +55,7 @@ Control Center treats desktop resource bindings as an authorization boundary, no
 - An offline bound resource returns an explicit unavailable error.
 - A non-attachable browser is visible in Resources but cannot be used for browser automation.
 - There is no fallback to another Agent's WeChat/browser.
+- Binding WeChat does not disable `computer_use`, `clarify`, or general web automation. Those capabilities remain available; browser automation is still scoped to the Agent-bound browser, while Desktop WeChat send/receive stays on the bound Gateway platform.
 
 Resource state is persisted under:
 

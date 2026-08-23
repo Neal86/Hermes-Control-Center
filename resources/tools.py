@@ -16,11 +16,11 @@ def _result(fn: Callable[[], Any]) -> str:
 
 
 def _wechat_backend(agent: str) -> WeChatWebAdapter:
-    """Resolve WeChat only through WeChat Web Adapter -> CDP -> DOM.
+    """Resolve WeChat Web through the Agent-bound browser when a WeChat Web tab exists.
 
-    Desktop WeChat is deliberately not used as a fallback. This keeps routing
-    deterministic: WeChat => dedicated Web Adapter over CDP; all other web work
-    => Hermes native browser/computer-use tools.
+    The same Agent-bound browser is a general-purpose browser resource and may also
+    be used by Hermes native browser tools for business systems such as Lingxing.
+    Desktop WeChat remains a separate Gateway/platform path.
     """
     ResourceBindings().require(agent, "browser", ready=True)
     adapter = WeChatWebAdapter(agent)
@@ -57,11 +57,11 @@ def bound_browser(args: dict, **kwargs) -> str:
             "agent": agent,
             "resource": row,
             "cdp_url": f"http://127.0.0.1:{int(port)}",
-            "purpose": "wechat_web_only",
+            "purpose": "general_web_and_wechat_web",
             "wechat_adapter": "wechat_web_adapter",
             "wechat_driver": "cdp_dom",
-            "other_websites": "hermes_native_browser",
-            "generic_cdp_browsing_allowed": False,
+            "other_websites": "allowed_on_bound_browser",
+            "generic_cdp_browsing_allowed": True,
             "policy": "bound-only",
         }
 
@@ -122,6 +122,6 @@ RESOURCE_LIST = {
 
 BOUND_BROWSER = {
     "name": "bound_browser",
-    "description": "Return the Agent-bound browser reserved for the WeChat Web Adapter. The adapter uses CDP internally; do not use this CDP browser for Lingxing, carriers, email, or other websites. Use Hermes native browser/computer-use capabilities for those.",
+    "description": "Return the Agent-bound general-purpose browser and its CDP endpoint. It may be used for Lingxing, carriers, email, and other websites. If a WeChat Web tab is open, the WeChat Web Adapter may use the same bound browser; Desktop WeChat messaging remains a separate Gateway path.",
     "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
 }
