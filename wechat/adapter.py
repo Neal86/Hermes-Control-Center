@@ -281,6 +281,82 @@ class WeChatDesktop:
             ) from exc
 
     @staticmethod
+    def _post_text(editor, text: str) -> None:
+        """Post Unicode WM_CHAR messages directly to the editor without foreground input."""
+        try:
+            hwnd = int(getattr(editor, "handle", 0) or 0)
+            if not hwnd:
+                raise OSError("message editor does not expose a native HWND")
+            user32 = ctypes.windll.user32
+            units = str(text).encode("utf-16-le")
+            for offset in range(0, len(units), 2):
+                code_unit = int.from_bytes(units[offset : offset + 2], "little")
+                if not user32.PostMessageW(hwnd, 0x0102, code_unit, 1):
+                    raise OSError("PostMessageW(WM_CHAR) returned false")
+        except Exception as exc:
+            raise WeChatUnavailable(
+                "WeChat does not expose background character input required for a real group @mention"
+            ) from exc
+
+    def _exact_mention_candidates(self, win, mention_name: str) -> list[Any]:
+        wanted = str(mention_name or "").strip()
+        if not wanted:
+            return []
+        matches: list[Any] = []
+        seen: set[str] = set()
+        for control_type in ("ListItem", "DataItem"):
+            try:
+                controls = win.descendants(control_type=control_type)
+            except Exception:
+                continue
+            for item in controls:
+                try:
+                    automation_id = str(getattr(item.element_info, "automation_id", "") or "")
+                    class_name = str(getattr(item.element_info, "class_name", "") or "")
+                    if automation_id.startswith(("session_item_", "chat_message_list.")):
+                        continue
+                    if "ChatSessionCell" in class_name:
+                        continue
+                    labels = [
+                        self._safe_text(child)
+                        for child in item.descendants(control_type="Text")
+                        if self._safe_text(child)
+                    ]
+                    own = self._safe_text(item)
+                    if own:
+                        labels.extend(line.strip() for line in own.splitlines() if line.strip())
+                    if wanted not in labels:
+                        continue
+                    runtime_id = getattr(item.element_info, "runtime_id", None)
+                    key = repr(tuple(runtime_id)) if runtime_id else repr(item.rectangle())
+                    if key not in seen:
+                        seen.add(key)
+                        matches.append(item)
+                except Exception:
+                    continue
+        return matches
+
+    def _compose_group_mention(self, win, editor, mention_name: str, text: str) -> str:
+        mention = str(mention_name or "").strip()
+        if not mention:
+            raise ValueError("mention_name is required for a group mention")
+        self._set_text(editor, "")
+        self._post_text(editor, f"@{mention}")
+        time.sleep(0.3)
+        matches = self._exact_mention_candidates(win, mention)
+        if len(matches) != 1:
+            self._set_text(editor, "")
+            if matches:
+                raise WeChatUnavailable(
+                    f"Ambiguous WeChat @mention: more than one exact member named {mention!r}"
+                )
+            raise WeChatUnavailable(f"No exact WeChat @mention candidate named {mention!r}")
+        self._invoke(matches[0])
+        time.sleep(0.1)
+        self._post_text(editor, f" {text}")
+        return f"@{mention} {text}"
+
+    @staticmethod
     def _post_enter(editor) -> None:
         """Post Enter directly to the bound WeChat HWND without focus or mouse input."""
         try:
@@ -588,14 +664,24 @@ class WeChatDesktop:
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
         tmp.replace(self._state_path)
 
-    def send_message(self, chat: str, text: str, *, dry_run: bool = False, duplicate_ttl: int = 600) -> dict[str, Any]:
+    def send_message(
+        self,
+        chat: str,
+        text: str,
+        *,
+        dry_run: bool = False,
+        duplicate_ttl: int = 600,
+        mention_name: str | None = None,
+    ) -> dict[str, Any]:
         chat = chat.strip()
         text = text.strip()
+        mention = str(mention_name or "").strip() or None
         if not chat or not text:
             raise ValueError("chat and text are required")
         if len(text) > 4000:
             raise ValueError("text exceeds 4000 characters")
-        digest = hashlib.sha256(f"{chat}\0{text}".encode("utf-8")).hexdigest()
+        wire_text = f"@{mention} {text}" if mention else text
+        digest = hashlib.sha256(f"{chat}\0{wire_text}".encode("utf-8")).hexdigest()
         with self._lock:
             state = self._load_state()
             previous = state.get(digest)
@@ -609,10 +695,17 @@ class WeChatDesktop:
             if not self._is_current_target(win, chat):
                 raise WeChatUnavailable(f"Refusing to send: current conversation is not verified as {chat!r}")
             editor = self._message_editor(win)
-            self._set_text(editor, text)
             if dry_run:
+                self._set_text(editor, wire_text)
                 self._set_text(editor, "")
-                return {"ok": True, "sent": False, "dry_run": True, "chat": chat, "characters": len(text)}
+                return {
+                    "ok": True, "sent": False, "dry_run": True, "chat": chat,
+                    "characters": len(text), "wire_text": wire_text, "mention_name": mention,
+                }
+            if mention:
+                wire_text = self._compose_group_mention(win, editor, mention, text)
+            else:
+                self._set_text(editor, text)
             if not self._is_current_target(win, chat):
                 self._set_text(editor, "")
                 raise WeChatUnavailable("Refusing to send because target verification changed")
@@ -621,4 +714,7 @@ class WeChatDesktop:
             cutoff = now - max(3600, duplicate_ttl * 4)
             state = {key: value for key, value in state.items() if isinstance(value, (int, float)) and value >= cutoff}
             self._save_state(state)
-            return {"ok": True, "sent": True, "chat": chat, "characters": len(text)}
+            return {
+                "ok": True, "sent": True, "chat": chat, "characters": len(text),
+                "wire_text": wire_text, "mention_name": mention,
+            }

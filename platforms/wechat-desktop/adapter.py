@@ -58,6 +58,9 @@ _BOUND_AGENT: contextvars.ContextVar[str] = contextvars.ContextVar("hcc_wechat_b
 _CUSTOMER_REPLY_CONTENT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "hcc_wechat_customer_reply_content", default=None
 )
+_GROUP_REPLY_MENTION: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "hcc_wechat_group_reply_mention", default=None
+)
 
 
 class _BoundFactory:
@@ -429,7 +432,11 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
             },
             timestamp=legacy.datetime.now(legacy.UTC),
         )
-        await self.handle_message(event)
+        mention_token = _GROUP_REPLY_MENTION.set(sender if chat_type == "group" else None)
+        try:
+            await self.handle_message(event)
+        finally:
+            _GROUP_REPLY_MENTION.reset(mention_token)
         # Commit only after successful delivery so a failed Gateway handoff is
         # retried rather than silently acknowledged.
         self.receiver_state.commit_message(chat, fingerprint)
@@ -496,7 +503,13 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
             },
             timestamp=event.timestamp,
         )
-        await self.handle_message(gateway_event)
+        mention_token = _GROUP_REPLY_MENTION.set(
+            str(event.sender_name or "").strip() if event.conversation_type == "group" else None
+        )
+        try:
+            await self.handle_message(gateway_event)
+        finally:
+            _GROUP_REPLY_MENTION.reset(mention_token)
         self.receiver_state.commit_db_cursor(event.conversation_id, event.sort_seq)
         logger.info(
             "WECHAT_DB_RECEIVE_DECISION conversation=%r message_id=%s decision=DELIVER reason=%s sender=%r",
@@ -621,15 +634,19 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
         chat = str(chat_id or "").strip()
         target = self.db_receiver.conversation_name(chat) if self._db_primary else chat
         sent_wall = time.time()
+        mention_name = str(_GROUP_REPLY_MENTION.get() or "").strip() or None
         try:
-            result = await asyncio.to_thread(self.sender.send, target, content)
+            result = await asyncio.to_thread(
+                self.sender.send, target, content, mention_name=mention_name
+            )
         except Exception as exc:
             return legacy.SendResult(success=False, error=str(exc))
+        wire_text = str(result.get("wire_text") or content)
         if self._db_primary:
             verified = await asyncio.to_thread(
                 self.db_receiver.verify_outbound,
                 chat,
-                content,
+                wire_text,
                 after_epoch=sent_wall,
                 timeout=8.0,
             )
