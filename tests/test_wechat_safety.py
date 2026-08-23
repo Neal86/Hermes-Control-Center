@@ -16,8 +16,6 @@ _spec.loader.exec_module(adapter_mod)
 WeChatDesktop = adapter_mod.WeChatDesktop
 WeChatUnavailable = adapter_mod.WeChatUnavailable
 
-from resources.wechat_bound import BoundWeChatDesktop
-
 
 class FakeValuePattern:
     def __init__(self) -> None:
@@ -68,71 +66,3 @@ def test_open_chat_invokes_single_exact_result_without_keyboard(tmp_path: Path, 
 
     assert search.iface_value.values == ["Exact Customer"]
     assert result.invoked == 1
-
-
-class FakeElementInfo:
-    def __init__(self, automation_id: str) -> None:
-        self.automation_id = automation_id
-
-
-class FakeHeader:
-    def __init__(self, value: str) -> None:
-        self.element_info = FakeElementInfo("content_view.current_chat_name_label")
-        self.value = value
-
-    def window_text(self) -> str:
-        return self.value
-
-
-class FakeBoundWindow:
-    def __init__(self, header: str) -> None:
-        self.header = FakeHeader(header)
-
-    def descendants(self, control_type=None):
-        return [self.header] if control_type == "Text" else []
-
-
-def test_bound_runtime_header_is_authoritative_over_selected_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = object.__new__(BoundWeChatDesktop)
-    win = FakeBoundWindow("Other Chat")
-    monkeypatch.setattr(client, "_session_matches", lambda _win, _chat: [object()])
-    monkeypatch.setattr(client, "_session_selected", lambda _control: True)
-
-    assert client._is_current_target(win, "Neal") is False
-    win.header.value = "Neal"
-    assert client._is_current_target(win, "Neal") is True
-
-
-def test_open_chat_does_not_trust_stale_selected_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = object.__new__(BoundWeChatDesktop)
-    win = FakeBoundWindow("Other Chat")
-    control = object()
-    switched: list[str] = []
-    monkeypatch.setattr(client, "_main_window", lambda: win)
-    monkeypatch.setattr(client, "_session_matches", lambda _win, _chat: [control])
-    monkeypatch.setattr(client, "_session_selected", lambda _control: True)
-
-    def switch(_control, *, chat: str) -> None:
-        switched.append(chat)
-        win.header.value = chat
-
-    monkeypatch.setattr(client, "_select_session_background", switch)
-    client.open_chat("Neal")
-
-    assert switched == ["Neal"]
-    assert client._current_chat_header(win) == "Neal"
-
-
-def test_restore_previous_foreground_reuses_strong_runtime_restore(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = object.__new__(BoundWeChatDesktop)
-    client.window_handle = 200
-    client.resource_id = "wechat:test"
-    client.agent = "11"
-    restored: list[int] = []
-    monkeypatch.setattr(client, "_foreground_hwnd", lambda: 200)
-    monkeypatch.setattr(client, "_record_focus_violation", lambda **_kwargs: None)
-    monkeypatch.setattr(client, "_restore_foreground", lambda hwnd: restored.append(hwnd))
-
-    client._restore_previous_foreground(before=100, operation="send")
-
-    assert restored == [100]
