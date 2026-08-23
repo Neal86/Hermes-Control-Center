@@ -3,7 +3,7 @@
   "label": "Hermes Control Center",
   "description": "Manage Hermes Agents, Providers, Tasks, WeChat Web and browser resource bindings from one dashboard.",
   "icon": "Activity",
-  "version": "0.8.42",
+  "version": "0.8.43",
   "tab": {
     "path": "/management-center",
     "position": "after:cron"

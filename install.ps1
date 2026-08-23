@@ -19,23 +19,46 @@ $LegacyNestedPlatformTarget = Join-Path $PluginsRoot "platforms\wechat-desktop"
 $Requirements = Join-Path $Source "requirements-windows.txt"
 $HermesCommand = Get-Command hermes -ErrorAction SilentlyContinue
 
+function Get-GatewayPidPath {
+    param([string]$Profile)
+    if (-not $Profile -or $Profile -eq "default") { return Join-Path $HermesHome "gateway.pid" }
+    return Join-Path (Join-Path (Join-Path $HermesHome "profiles") $Profile) "gateway.pid"
+}
+
+function Read-GatewayPid {
+    param([string]$PidPath)
+    if (-not $PidPath -or -not (Test-Path -LiteralPath $PidPath)) { return 0 }
+    try {
+        $raw = (Get-Content -LiteralPath $PidPath -Raw -ErrorAction Stop).Trim()
+        if (-not $raw) { return 0 }
+        if ($raw.StartsWith("{")) {
+            try {
+                $payload = $raw | ConvertFrom-Json -ErrorAction Stop
+                $jsonPid = 0
+                if ($null -ne $payload.pid -and [int]::TryParse(([string]$payload.pid), [ref]$jsonPid) -and $jsonPid -gt 0) { return $jsonPid }
+            } catch {}
+            return 0
+        }
+        $legacyPid = 0
+        if ([int]::TryParse($raw, [ref]$legacyPid) -and $legacyPid -gt 0) { return $legacyPid }
+    } catch {}
+    return 0
+}
+
 function Get-RunningGatewayProfiles {
     $running = New-Object System.Collections.Generic.List[string]
-    $candidates = @(@{ Name = "default"; Pid = (Join-Path $HermesHome "gateway.pid") })
+    $candidates = @(@{ Name = "default"; Pid = (Get-GatewayPidPath -Profile "default") })
     $profilesRoot = Join-Path $HermesHome "profiles"
     if (Test-Path -LiteralPath $profilesRoot) {
         Get-ChildItem -LiteralPath $profilesRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-            $candidates += @{ Name = $_.Name; Pid = (Join-Path $_.FullName "gateway.pid") }
+            $candidates += @{ Name = $_.Name; Pid = (Get-GatewayPidPath -Profile $_.Name) }
         }
     }
     foreach ($candidate in $candidates) {
-        if (-not (Test-Path -LiteralPath $candidate.Pid)) { continue }
-        try {
-            $pidValue = [int]((Get-Content -LiteralPath $candidate.Pid -Raw -ErrorAction Stop).Trim())
-            if ($pidValue -gt 0 -and (Get-Process -Id $pidValue -ErrorAction SilentlyContinue)) {
-                if (-not $running.Contains([string]$candidate.Name)) { $running.Add([string]$candidate.Name) }
-            }
-        } catch {}
+        $pidValue = Read-GatewayPid -PidPath $candidate.Pid
+        if ($pidValue -gt 0 -and (Get-Process -Id $pidValue -ErrorAction SilentlyContinue)) {
+            if (-not $running.Contains([string]$candidate.Name)) { $running.Add([string]$candidate.Name) }
+        }
     }
     return @($running)
 }
@@ -85,10 +108,24 @@ function Restart-PreviouslyRunningRuntime {
     param([string[]]$GatewayProfiles, [int]$DashboardPort)
     if (-not $HermesCommand) { return }
     foreach ($profile in $GatewayProfiles) {
-        Write-Stage ("Reloading Gateway runtime for profile " + $profile)
+        $pidPath = Get-GatewayPidPath -Profile $profile
+        $beforePid = Read-GatewayPid -PidPath $pidPath
+        Write-Stage ("Reloading Gateway runtime for profile " + $profile + " (pid " + $beforePid + ")")
         if ($profile -eq "default") { & $HermesCommand.Source gateway restart | Out-Host }
         else { & $HermesCommand.Source -p $profile gateway restart | Out-Host }
         if ($LASTEXITCODE -ne 0) { throw "Gateway restart failed for profile '$profile'." }
+        $afterPid = 0
+        $reloaded = $false
+        for ($attempt = 0; $attempt -lt 20; $attempt++) {
+            Start-Sleep -Milliseconds 250
+            $afterPid = Read-GatewayPid -PidPath $pidPath
+            if ($afterPid -gt 0 -and $afterPid -ne $beforePid -and (Get-Process -Id $afterPid -ErrorAction SilentlyContinue)) {
+                $reloaded = $true
+                break
+            }
+        }
+        if (-not $reloaded) { throw "Gateway restart verification failed for profile '$profile' (before=$beforePid after=$afterPid)." }
+        Write-Stage ("Gateway runtime reloaded for profile " + $profile + " (pid " + $afterPid + ")")
     }
     if ($DashboardPort -gt 0) {
         Write-Stage ("Reloading Dashboard runtime on port " + $DashboardPort)

@@ -41,3 +41,24 @@ def test_installer_refreshes_and_reloads_running_control_center_runtime() -> Non
         "dashboard --stop",
     ):
         assert required in INSTALLER, required
+
+
+def test_installer_supports_json_and_legacy_gateway_pid_files() -> None:
+    for required in (
+        "Read-GatewayPid",
+        "ConvertFrom-Json",
+        "payload.pid",
+        "[int]::TryParse($raw",
+    ):
+        assert required in INSTALLER, required
+
+
+def test_installer_verifies_gateway_restart_with_a_new_live_pid() -> None:
+    for required in (
+        "$beforePid = Read-GatewayPid",
+        "$afterPid = Read-GatewayPid",
+        "$afterPid -ne $beforePid",
+        "Get-Process -Id $afterPid",
+        "Gateway restart verification failed",
+    ):
+        assert required in INSTALLER, required
