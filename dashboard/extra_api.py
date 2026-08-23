@@ -268,6 +268,10 @@ def bind_resource(resource_id: str, body: BindingBody) -> dict[str, Any]:
             if port <= 0:
                 raise RuntimeError("Bound browser has no usable CDP port")
             cdp_url = f"http://127.0.0.1:{port}"
+            # Hermes 0.20.5+ defaults to Browser Use CLI when browser.backend is unset.
+            # A Control Center bound CDP browser must stay on the built-in browser_* stack,
+            # otherwise tool availability is gated out before the CDP override is considered.
+            management._set_config(agent, "browser.backend", "off")
             management._set_config(agent, "browser.cdp_url", cdp_url)
             restart = management.agent_action(agent, "gateway_restart")
             if not restart.get("ok"):
