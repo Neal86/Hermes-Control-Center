@@ -36,6 +36,13 @@ def load_platform_module():
         def _mark_disconnected(self):
             self._running = False
 
+        async def _send_with_retry(
+            self, chat_id, content, reply_to=None, metadata=None, max_retries=2, base_delay=2.0
+        ):
+            return await self.send(
+                chat_id=chat_id, content=content, reply_to=reply_to, metadata=metadata
+            )
+
     class MessageEvent:
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
@@ -189,3 +196,41 @@ def test_db_routing_dm_group_and_self_contract() -> None:
     asyncio.run(adapter._deliver_db_event(event(message_id="3", sort_seq=12, is_self=True)))
     assert len(delivered) == 1
     assert ("neal", 12) in committed
+
+
+def _outbound_test_adapter(module):
+    adapter = object.__new__(module.WeChatDesktopPlatformAdapter)
+    adapter._db_primary = False
+    sent = []
+
+    class Sender:
+        def send(self, target, content):
+            sent.append((target, content))
+            return {"fingerprint": "fp", "message_id": "mid"}
+
+    adapter.sender = Sender()
+    adapter.db_receiver = types.SimpleNamespace(conversation_name=lambda chat: chat)
+    adapter._recent_outbound = {}
+    adapter.receiver_state = types.SimpleNamespace(remember_outbound=lambda *args: None)
+    adapter._prune_dedup = lambda now: None
+    return adapter, sent
+
+
+def test_direct_platform_notice_is_suppressed_before_wechat_sender() -> None:
+    module = load_platform_module()
+    adapter, sent = _outbound_test_adapter(module)
+    result = asyncio.run(adapter.send(
+        "neal",
+        "No home channel is set for Wechat_Desktop. Type /sethome to configure it.",
+    ))
+    assert result.success is True
+    assert sent == []
+
+
+def test_customer_reply_delivery_path_is_allowed() -> None:
+    module = load_platform_module()
+    adapter, sent = _outbound_test_adapter(module)
+    reply = "这个单号目前没有查到，我帮你再确认一下。"
+    result = asyncio.run(adapter._send_with_retry("neal", reply))
+    assert result.success is True
+    assert sent == [("neal", reply)]

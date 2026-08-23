@@ -55,6 +55,9 @@ def _load_legacy():
 legacy = _load_legacy()
 logger = legacy.logger
 _BOUND_AGENT: contextvars.ContextVar[str] = contextvars.ContextVar("hcc_wechat_bound_agent", default="default")
+_CUSTOMER_REPLY_CONTENT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "hcc_wechat_customer_reply_content", default=None
+)
 
 
 class _BoundFactory:
@@ -564,6 +567,29 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
                 sleep_for = self._poll_failure(exc)
             await asyncio.sleep(sleep_for)
 
+    async def _send_with_retry(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: str | None = None,
+        metadata: dict | None = None,
+        max_retries: int = 2,
+        base_delay: float = 2.0,
+    ):
+        """Authorize only the customer-facing reply being delivered by Hermes."""
+        token = _CUSTOMER_REPLY_CONTENT.set(str(content))
+        try:
+            return await super()._send_with_retry(
+                chat_id=chat_id,
+                content=content,
+                reply_to=reply_to,
+                metadata=metadata,
+                max_retries=max_retries,
+                base_delay=base_delay,
+            )
+        finally:
+            _CUSTOMER_REPLY_CONTENT.reset(token)
+
     async def send(
         self,
         chat_id: str,
@@ -571,6 +597,26 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
         reply_to: str | None = None,
         metadata: dict | None = None,
     ):
+        approved = _CUSTOMER_REPLY_CONTENT.get()
+        if approved is None:
+            logger.info(
+                "WECHAT_OUTBOUND_SUPPRESSED chat=%r reason=non_customer_platform_notice chars=%s",
+                str(chat_id or "").strip(),
+                len(str(content or "")),
+            )
+            # Hermes operational notices call adapter.send() directly. Treat the
+            # suppression as accepted so the Gateway does not retry or reroute it.
+            return legacy.SendResult(success=True)
+        if str(content) != approved:
+            logger.warning(
+                "WECHAT_OUTBOUND_SUPPRESSED chat=%r reason=non_reply_content_during_delivery chars=%s",
+                str(chat_id or "").strip(),
+                len(str(content or "")),
+            )
+            # A retry helper may synthesize its own delivery/error notice. Do not
+            # report that synthetic text as delivered; only the approved reply may
+            # satisfy the customer-response delivery obligation.
+            return legacy.SendResult(success=False, error="WeChat customer-facing policy blocked non-reply content")
         del reply_to, metadata
         chat = str(chat_id or "").strip()
         target = self.db_receiver.conversation_name(chat) if self._db_primary else chat
