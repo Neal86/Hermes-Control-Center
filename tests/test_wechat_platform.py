@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 import types
@@ -134,3 +135,57 @@ def test_poll_failures_become_degraded_and_back_off() -> None:
     adapter._poll_success()
     assert adapter._health == "healthy"
     assert adapter._consecutive_failures == 0
+
+
+def test_db_adapter_owns_mention_policy_instead_of_legacy_revision() -> None:
+    source = ADAPTER.read_text(encoding="utf-8")
+    legacy_source = ADAPTER.with_name("adapter_legacy.py").read_text(encoding="utf-8")
+    assert "self.require_mention =" in source
+    assert "self.mention_name =" in source
+    assert "self.require_mention =" in legacy_source
+    assert "self.mention_name =" in legacy_source
+
+
+def test_db_routing_dm_group_and_self_contract() -> None:
+    module = load_platform_module()
+    adapter = object.__new__(module.WeChatDesktopPlatformAdapter)
+    adapter.require_mention = True
+    committed = []
+    adapter.receiver_state = types.SimpleNamespace(
+        commit_db_cursor=lambda conversation_id, sort_seq: committed.append((conversation_id, sort_seq))
+    )
+    adapter.build_source = lambda **kwargs: kwargs
+    delivered = []
+
+    async def handle_message(event):
+        delivered.append(event)
+
+    adapter.handle_message = handle_message
+
+    def event(**overrides):
+        data = dict(
+            account_id="self", conversation_id="neal", conversation_name="Neal",
+            conversation_type="dm", sender_id="customer", sender_name="Customer",
+            message_id="1", message_type="text", content="你好", is_self=False,
+            mentioned_me=False, sort_seq=10, timestamp=module.legacy.datetime.now(module.legacy.UTC),
+        )
+        data.update(overrides)
+        return types.SimpleNamespace(**data)
+
+    # A DM never requires a mention.
+    asyncio.run(adapter._deliver_db_event(event()))
+    assert len(delivered) == 1
+    assert delivered[0].source["chat_type"] == "dm"
+
+    # A group without @mention is acknowledged but never delivered to the Agent.
+    asyncio.run(adapter._deliver_db_event(event(
+        conversation_id="room@chatroom", conversation_name="Room", conversation_type="group",
+        message_id="2", sort_seq=11, mentioned_me=False,
+    )))
+    assert len(delivered) == 1
+    assert ("room@chatroom", 11) in committed
+
+    # Our own outbound message is always dropped before Agent delivery.
+    asyncio.run(adapter._deliver_db_event(event(message_id="3", sort_seq=12, is_self=True)))
+    assert len(delivered) == 1
+    assert ("neal", 12) in committed

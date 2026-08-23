@@ -91,6 +91,19 @@ class WeChatDesktopPlatformAdapter(legacy.WeChatDesktopPlatformAdapter):
             super().__init__(config)
         finally:
             _BOUND_AGENT.reset(token)
+        # The DB-primary adapter owns its routing policy. Do not depend on a
+        # particular legacy adapter revision to initialize these fields: a
+        # mixed/stale legacy file must never take down DM receiving.
+        extra = config.extra or {}
+        raw_require_mention = extra.get("require_mention", os.getenv("WECHAT_DESKTOP_REQUIRE_MENTION"))
+        self.require_mention = (
+            True
+            if raw_require_mention is None
+            else str(raw_require_mention).strip().lower() in {"1", "true", "yes", "on"}
+        )
+        self.mention_name = str(
+            extra.get("mention_name") or os.getenv("WECHAT_DESKTOP_MENTION_NAME") or "海外仓客服"
+        ).strip()
         self.allowed_chats = set()
         self.receiver_state = ReceiverState(self.bound_agent)
         self._preview_seen = self.receiver_state.previews
