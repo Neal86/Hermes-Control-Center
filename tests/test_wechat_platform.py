@@ -234,3 +234,27 @@ def test_customer_reply_delivery_path_is_allowed() -> None:
     result = asyncio.run(adapter._send_with_retry("neal", reply))
     assert result.success is True
     assert sent == [("neal", reply)]
+
+
+def test_group_customer_reply_prefixes_current_questioner_as_text() -> None:
+    module = load_platform_module()
+    adapter, sent = _outbound_test_adapter(module)
+    reply = "已经查到，我马上发你结果。"
+    token = module._GROUP_REPLY_QUESTIONER.set("Alex")
+    try:
+        result = asyncio.run(adapter._send_with_retry("room@chatroom", reply))
+    finally:
+        module._GROUP_REPLY_QUESTIONER.reset(token)
+    assert result.success is True
+    assert sent == [("room@chatroom", f"@Alex {reply}")]
+
+
+def test_group_questioner_context_does_not_leak_into_dm_reply() -> None:
+    module = load_platform_module()
+    adapter, sent = _outbound_test_adapter(module)
+    reply = "私聊直接回复。"
+    token = module._GROUP_REPLY_QUESTIONER.set("Alex")
+    module._GROUP_REPLY_QUESTIONER.reset(token)
+    result = asyncio.run(adapter._send_with_retry("neal", reply))
+    assert result.success is True
+    assert sent == [("neal", reply)]
