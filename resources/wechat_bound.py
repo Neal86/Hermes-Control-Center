@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+from ctypes import wintypes
 import hashlib
 import json
 import os
@@ -34,11 +35,14 @@ def _thread_lock(resource_id: str) -> threading.RLock:
 class BoundWeChatDesktop(_RuntimeWeChat):
     """WeChat runtime pinned to one Agent resource with foreground restoration.
 
-    Polling keeps using read-only UIA. Only a changed conversation may require a
-    SelectionItem switch so its real messages can be read. If modern WeChat takes
-    foreground during that switch, the runtime immediately restores the exact app
-    that was foreground before the operation. No mouse/keyboard input, resizing,
-    moving, search fallback, or alternate WeChat instance is allowed.
+    Polling keeps using read-only UIA. A changed conversation is switched only by
+    posting window-local mouse messages to the exact bound WeChat HWND at the
+    current UIA session item's live rectangle. The physical mouse is never moved,
+    fixed screen coordinates are never used, and the resulting chat header must
+    match exactly before any read or send may continue. If modern WeChat briefly
+    becomes foreground, this bound-resource layer restores only the HWND that was
+    foreground when the transaction began. No search fallback or alternate WeChat
+    instance is allowed.
     """
 
     def __init__(self, agent: str, resource_id: str | None = None, *, lock_timeout: float = 15.0) -> None:
@@ -90,36 +94,55 @@ class BoundWeChatDesktop(_RuntimeWeChat):
         except Exception:
             pass
 
-    def _restore_previous_foreground(self, *, before: int, operation: str) -> None:
-        """Put the user's original app back if WeChat stole foreground.
+    @staticmethod
+    def _restore_bound_foreground(hwnd: int) -> bool:
+        """Restore one previously foreground HWND without global mouse/keyboard input."""
+        if os.name != "nt" or not hwnd:
+            return False
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        try:
+            if not user32.IsWindow(int(hwnd)):
+                return False
+            if int(user32.GetForegroundWindow() or 0) == int(hwnd):
+                return True
+            foreground = int(user32.GetForegroundWindow() or 0)
+            current_tid = int(kernel32.GetCurrentThreadId() or 0)
+            foreground_tid = int(user32.GetWindowThreadProcessId(foreground, None) or 0) if foreground else 0
+            target_tid = int(user32.GetWindowThreadProcessId(int(hwnd), None) or 0)
+            attached: list[int] = []
+            try:
+                for tid in (foreground_tid, target_tid):
+                    if tid and tid != current_tid and tid not in attached:
+                        if user32.AttachThreadInput(current_tid, tid, True):
+                            attached.append(tid)
+                user32.BringWindowToTop(int(hwnd))
+                user32.SetForegroundWindow(int(hwnd))
+                for _ in range(6):
+                    if int(user32.GetForegroundWindow() or 0) == int(hwnd):
+                        return True
+                    time.sleep(0.03)
+                return False
+            finally:
+                for tid in reversed(attached):
+                    try:
+                        user32.AttachThreadInput(current_tid, tid, False)
+                    except Exception:
+                        pass
+        except Exception:
+            return False
 
-        SelectionItem.Select is the only known UIA operation here that may make
-        modern WeChat foreground. We intentionally allow the selection to finish,
-        then restore the pre-operation foreground HWND immediately. This avoids
-        retry loops that would repeatedly steal focus on every poll.
-        """
+    def _restore_previous_foreground(self, *, before: int, operation: str) -> None:
+        """Restore the exact pre-operation app if the bound WeChat stole foreground."""
         if os.name != "nt" or not before or before == self.window_handle:
             return
         after = self._foreground_hwnd()
         if after != self.window_handle:
             return
         self._record_focus_violation(before=before, after=after, operation=operation)
-        try:
-            user32 = ctypes.windll.user32
-            try:
-                user32.AllowSetForegroundWindow(-1)
-            except Exception:
-                pass
-            for _ in range(4):
-                user32.SetForegroundWindow(int(before))
-                time.sleep(0.03)
-                if self._foreground_hwnd() == before:
-                    return
-        except Exception:
-            pass
-        # Do not throw here. The message read/send may already have succeeded;
-        # throwing would leave its preview uncommitted and cause the same chat to
-        # be retried on every polling cycle, producing repeated focus changes.
+        self._restore_bound_foreground(int(before))
+        # Do not throw here. The message may already have been sent; a restore
+        # failure must never cause a duplicate send on the next retry.
 
     def _main_window(self):
         Desktop = self._deps()
@@ -272,27 +295,79 @@ class BoundWeChatDesktop(_RuntimeWeChat):
         except Exception:
             return False
 
-    def _is_current_target(self, win, chat: str) -> bool:
-        """Verify target using title OR the session's UIA selected state."""
+    @staticmethod
+    def _current_chat_header(win) -> str:
+        """Read modern WeChat's canonical current-chat header, if exposed."""
+        names: list[str] = []
         try:
-            if super()._is_current_target(win, chat):
+            controls = win.descendants(control_type="Text")
+        except Exception:
+            return ""
+        for control in controls:
+            try:
+                automation_id = str(getattr(control.element_info, "automation_id", "") or "")
+                if not automation_id.endswith("current_chat_name_label"):
+                    continue
+                value = str(control.window_text() or "").strip()
+                if value and value not in names:
+                    names.append(value)
+            except Exception:
+                continue
+        return names[0] if len(names) == 1 else ""
+
+    def _is_current_target(self, win, chat: str) -> bool:
+        """Treat the canonical chat header as authoritative and otherwise fail closed."""
+        wanted = str(chat or "").strip()
+        if not wanted:
+            return False
+        header = self._current_chat_header(win)
+        if header:
+            return header == wanted
+        try:
+            if super()._is_current_target(win, wanted):
                 return True
         except Exception:
             pass
-        matches = self._session_matches(win, chat)
+        matches = self._session_matches(win, wanted)
         return len(matches) == 1 and self._session_selected(matches[0])
 
-    def _select_session_background(self, control, *, chat: str) -> None:
-        """Select one session, then immediately restore the user's prior app."""
-        before = self._foreground_hwnd()
+    def _post_session_click(self, control, *, chat: str) -> None:
+        """Post a dynamic click to the exact bound HWND without moving the real mouse."""
+        if os.name != "nt":
+            raise WeChatUnavailable("BACKGROUND_SEND_UNSUPPORTED: window-message switching requires Windows")
         try:
-            control.iface_selection_item.Select()
+            rect = control.rectangle()
+            win = self._main_window()
+            win_rect = win.rectangle()
+            x_screen = (int(rect.left) + int(rect.right)) // 2
+            y_screen = (int(rect.top) + int(rect.bottom)) // 2
+            if not (int(win_rect.left) <= x_screen < int(win_rect.right) and int(win_rect.top) <= y_screen < int(win_rect.bottom)):
+                raise WeChatUnavailable(f"Session {chat!r} is outside the bound WeChat window")
+            point = wintypes.POINT(x_screen, y_screen)
+            user32 = ctypes.windll.user32
+            if not user32.ScreenToClient(int(self.window_handle), ctypes.byref(point)):
+                raise ctypes.WinError()
+            lparam = ((int(point.y) & 0xFFFF) << 16) | (int(point.x) & 0xFFFF)
+            for message, wparam in ((0x0200, 0), (0x0201, 0x0001), (0x0202, 0)):
+                if not user32.PostMessageW(int(self.window_handle), message, wparam, lparam):
+                    raise ctypes.WinError()
+        except WeChatUnavailable:
+            raise
         except Exception as exc:
-            raise WeChatUnavailable(
-                f"BACKGROUND_SEND_UNSUPPORTED: WeChat session {chat!r} has no background SelectionItem pattern"
-            ) from exc
-        time.sleep(0.25)
+            raise WeChatUnavailable(f"BACKGROUND_SEND_UNSUPPORTED: failed to switch session {chat!r}: {exc}") from exc
+
+    def _select_session_background(self, control, *, chat: str) -> None:
+        """Switch only inside the bound HWND and require the canonical header to confirm it."""
+        before = self._foreground_hwnd()
+        self._post_session_click(control, chat=chat)
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline:
+            time.sleep(0.05)
+            if self._current_chat_header(self._main_window()) == chat:
+                self._restore_previous_foreground(before=before, operation=f"select_session:{chat}")
+                return
         self._restore_previous_foreground(before=before, operation=f"select_session:{chat}")
+        raise WeChatUnavailable(f"Target verification failed after background switching {chat!r}")
 
     def open_chat(self, chat: str) -> None:
         """Open a chat from the bound WeChat session list only."""
@@ -310,8 +385,6 @@ class BoundWeChatDesktop(_RuntimeWeChat):
                 f"BACKGROUND_SEND_UNSUPPORTED: session {chat!r} is not exposed in the current session list; "
                 "strict mode will not search, resize, activate, click, or switch to another WeChat instance"
             )
-        if self._session_selected(matches[0]):
-            return
         self._select_session_background(matches[0], chat=chat)
         win = self._main_window()
         if not self._is_current_target(win, chat):
@@ -349,7 +422,9 @@ class BoundWeChatDesktop(_RuntimeWeChat):
                 "strict_background": True,
                 "read_only_receive": False,
                 "background_chat_selection": True,
-                "selected_state_verification": True,
+                "background_switch_transport": "bound-hwnd-window-message",
+                "canonical_header_verification": True,
+                "selected_state_verification": False,
                 "restore_previous_foreground": True,
                 "foreground_fallback": False,
                 "window_resize_allowed": False,
