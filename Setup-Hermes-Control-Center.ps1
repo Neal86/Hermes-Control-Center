@@ -172,6 +172,121 @@ function Get-HermesInstallKind {
     return "external"
 }
 
+function Get-RunningHermesDashboardProcesses {
+    $hermesHomeLower = ([string]$HermesHome).ToLowerInvariant()
+    $matches = @()
+    try {
+        foreach ($proc in Get-CimInstance Win32_Process -ErrorAction Stop) {
+            $cmd = [string]$proc.CommandLine
+            $exe = [string]$proc.ExecutablePath
+            $combined = ($exe + " " + $cmd).ToLowerInvariant()
+            if (-not $combined.Contains($hermesHomeLower) -or -not $combined.Contains("dashboard") -or -not $combined.Contains("hermes")) { continue }
+            $matches += $proc
+        }
+    } catch {}
+    return @($matches)
+}
+
+function Get-RunningHermesDashboardPort {
+    foreach ($proc in @(Get-RunningHermesDashboardProcesses)) {
+        $cmd = [string]$proc.CommandLine
+        if ($cmd -match '(?i)--port\s+(\d+)') { return [int]$Matches[1] }
+    }
+    if (@(Get-RunningHermesDashboardProcesses).Count -gt 0) { return 9119 }
+    return 0
+}
+
+function Wait-HermesDashboardStopped {
+    param([int]$TimeoutSeconds = 15)
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if (@(Get-RunningHermesDashboardProcesses).Count -eq 0) { return $true }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return $false
+}
+
+function Stop-HermesDashboardForUpdate {
+    $running = @(Get-RunningHermesDashboardProcesses)
+    if ($running.Count -eq 0) { return }
+    try {
+        & (Get-HermesCommand).Source dashboard --stop | Out-Host
+    } catch {}
+    Start-Sleep -Milliseconds 500
+    $remaining = @(Get-RunningHermesDashboardProcesses)
+    if ($remaining.Count -gt 0) {
+        Write-Host ("  -> Dashboard CLI stop left " + $remaining.Count + " process(es); stopping the Dashboard backend directly") -ForegroundColor DarkGray
+        foreach ($proc in ($remaining | Sort-Object ProcessId -Descending)) {
+            Stop-Process -Id ([int]$proc.ProcessId) -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if (-not (Wait-HermesDashboardStopped)) { throw "Hermes Dashboard did not stop cleanly before runtime update." }
+}
+
+function Start-HermesDashboardAfterUpdate {
+    param([int]$Port)
+    if ($Port -le 0) { return }
+    $cmd = Get-HermesCommand
+    if (-not $cmd) { throw "Hermes update completed but the launcher is unavailable for Dashboard restart." }
+    Write-Host ("  -> Restarting Hermes Dashboard on port " + $Port) -ForegroundColor DarkGray
+    Start-Process -FilePath $cmd.Source -ArgumentList @("dashboard","--skip-build","--no-open","--host","127.0.0.1","--port",[string]$Port) -WindowStyle Hidden | Out-Null
+}
+
+function Get-RunningHermesGatewayProfilesForUpdate {
+    $profiles = New-Object System.Collections.Generic.List[string]
+    $candidates = New-Object System.Collections.Generic.List[string]
+    $candidates.Add("default")
+    $profilesRoot = Join-Path $HermesHome "profiles"
+    if (Test-Path -LiteralPath $profilesRoot) {
+        Get-ChildItem -LiteralPath $profilesRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object { $candidates.Add($_.Name) }
+    }
+    foreach ($profile in $candidates) {
+        try {
+            $output = if ($profile -eq "default") { & (Get-HermesCommand).Source gateway status 2>&1 | Out-String } else { & (Get-HermesCommand).Source -p $profile gateway status 2>&1 | Out-String }
+            if ($output -match '(?i)Gateway process running') { $profiles.Add($profile) }
+        } catch {}
+    }
+    return @($profiles)
+}
+
+function Ensure-HermesGatewayProfilesAfterUpdate {
+    param([string[]]$Profiles)
+    foreach ($profile in @($Profiles)) {
+        $running = $false
+        try {
+            $status = if ($profile -eq "default") { & (Get-HermesCommand).Source gateway status 2>&1 | Out-String } else { & (Get-HermesCommand).Source -p $profile gateway status 2>&1 | Out-String }
+            $running = $status -match '(?i)Gateway process running'
+        } catch {}
+        if ($running) { continue }
+        Write-Host ("  -> Restoring Hermes Gateway profile " + $profile + " after runtime update") -ForegroundColor DarkGray
+        if ($profile -eq "default") { & (Get-HermesCommand).Source gateway start | Out-Host } else { & (Get-HermesCommand).Source -p $profile gateway start | Out-Host }
+        if ($LASTEXITCODE -ne 0) { throw "Hermes Gateway profile '$profile' failed to restart after runtime update." }
+        $deadline = [DateTime]::UtcNow.AddSeconds(15)
+        do {
+            Start-Sleep -Milliseconds 500
+            try {
+                $status = if ($profile -eq "default") { & (Get-HermesCommand).Source gateway status 2>&1 | Out-String } else { & (Get-HermesCommand).Source -p $profile gateway status 2>&1 | Out-String }
+                if ($status -match '(?i)Gateway process running') { $running = $true; break }
+            } catch {}
+        } while ([DateTime]::UtcNow -lt $deadline)
+        if (-not $running) { throw "Hermes Gateway profile '$profile' did not become healthy after runtime update." }
+    }
+}
+
+function Get-HermesCuaRefreshSetting {
+    try {
+        $value = (& (Get-HermesCommand).Source config get updates.refresh_cua_driver 2>$null | Out-String).Trim().ToLowerInvariant()
+        if ($value -in @("true","false")) { return $value }
+    } catch {}
+    return $null
+}
+
+function Set-HermesCuaRefreshSetting {
+    param([string]$Value)
+    if ($Value -notin @("true","false")) { return }
+    & (Get-HermesCommand).Source config set updates.refresh_cua_driver $Value | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not set updates.refresh_cua_driver=$Value before Hermes runtime update." }
+}
 function Update-Hermes {
     $installed = Get-HermesInstalledVersion
     if (-not $installed) {
@@ -203,8 +318,38 @@ function Update-Hermes {
     $kind = Get-HermesInstallKind
     Write-Step "Updating Hermes Agent v$installed -> v$latest"
     if ($kind -eq "official-windows") {
-        & (Get-HermesCommand).Source update
-        if ($LASTEXITCODE -ne 0) { throw "Hermes runtime update exited with code $LASTEXITCODE." }
+        $dashboardPort = Get-RunningHermesDashboardPort
+        $dashboardWasRunning = $dashboardPort -gt 0
+        $gatewayProfiles = @(Get-RunningHermesGatewayProfilesForUpdate)
+        $cuaRefreshSetting = Get-HermesCuaRefreshSetting
+        $cuaRefreshTemporarilyDisabled = $cuaRefreshSetting -eq "true"
+        try {
+            if ($dashboardWasRunning) {
+                Write-Host ("  -> Stopping Hermes Dashboard before runtime update (port " + $dashboardPort + ")") -ForegroundColor DarkGray
+                Stop-HermesDashboardForUpdate
+            }
+            if ($cuaRefreshTemporarilyDisabled) {
+                Write-Host "  -> Deferring optional cua-driver refresh until after the core Hermes update" -ForegroundColor DarkGray
+                Set-HermesCuaRefreshSetting -Value "false"
+            }
+            & (Get-HermesCommand).Source update
+            $updateExitCode = $LASTEXITCODE
+            if ($updateExitCode -ne 0) {
+                $installedAfterUpdate = Get-HermesInstalledVersion
+                $runtimeStillNeedsUpdate = Test-HermesRuntimeNeedsUpdate
+                if ($installedAfterUpdate -eq $latest -and -not $runtimeStillNeedsUpdate) {
+                    Write-Warning ("Hermes update returned code " + $updateExitCode + " after reaching v" + $installedAfterUpdate + "; verified runtime is current, continuing.")
+                } else {
+                    throw "Hermes runtime update exited with code $updateExitCode."
+                }
+            }
+        } finally {
+            if ($cuaRefreshTemporarilyDisabled) {
+                try { Set-HermesCuaRefreshSetting -Value $cuaRefreshSetting } catch { Write-Warning $_.Exception.Message }
+            }
+            Ensure-HermesGatewayProfilesAfterUpdate -Profiles $gatewayProfiles
+            if ($dashboardWasRunning) { Start-HermesDashboardAfterUpdate -Port $dashboardPort }
+        }
         return
     }
     if ($kind -eq "uv-tool") {
