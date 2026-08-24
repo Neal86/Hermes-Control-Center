@@ -341,3 +341,34 @@ def test_snapshot_reports_partial_profile_errors(tmp_path: Path) -> None:
     data = center.snapshot()
     assert data["partial"] is True
     assert any(row["scope"] == "projects:broken" for row in data["errors"])
+
+def test_dashboard_soul_update_refreshes_running_gateway_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sqlite3
+
+    write_profile(tmp_path)
+    with sqlite3.connect(tmp_path / "state.db") as db:
+        db.execute(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, ended_at REAL, system_prompt TEXT, system_prompt_hash TEXT)"
+        )
+        db.execute("INSERT INTO sessions VALUES ('live', NULL, 'old prompt', 'old-hash')")
+    center = center_with_cli(tmp_path, lambda command, **kwargs: "Gateway: running")
+    monkeypatch.setattr(center, "_normalized_gateway_state", lambda profile: "running")
+    calls = []
+
+    def fake_action(profile, action, value=None):
+        calls.append((profile, action))
+        return {"ok": True, "action": action, "gateway_state": "running"}
+
+    monkeypatch.setattr(center, "agent_action", fake_action)
+    result = center.agent_update("default", {"soul": "new"}, refresh_runtime=True)
+    assert calls == [("default", "gateway_restart")]
+    assert result["runtime_refreshed"] is True
+
+
+def test_autonomous_soul_update_does_not_restart_its_own_gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_profile(tmp_path)
+    center = center_with_cli(tmp_path, lambda command, **kwargs: "Gateway: running")
+    monkeypatch.setattr(center, "_normalized_gateway_state", lambda profile: "running")
+    monkeypatch.setattr(center, "agent_action", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not restart")))
+    result = center.agent_update("default", {"soul": "new"})
+    assert result["runtime_refreshed"] is False

@@ -9,6 +9,7 @@ install_hermes_cli_compat()
 
 from . import schemas, tools  # noqa: E402
 from .gateway_isolation import install_independent_gateway_policy  # noqa: E402
+from .business_guard import pre_llm_call as business_pre_llm_call  # noqa: E402
 from .resources import tools as resource_tools  # noqa: E402
 from .resources.policy import pre_tool_call as resource_pre_tool_call  # noqa: E402
 
@@ -35,6 +36,7 @@ def register(ctx):
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):
         register_hook("pre_tool_call", resource_pre_tool_call)
+        register_hook("pre_llm_call", business_pre_llm_call)
 
     _register_group(
         ctx,

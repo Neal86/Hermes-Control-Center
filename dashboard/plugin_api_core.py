@@ -338,7 +338,7 @@ def agent_create(body: AgentBody) -> dict[str, Any]:
 @router.patch("/agents/{name}")
 def agent_update(name: str, body: AgentBody) -> dict[str, Any]:
     try:
-        return ManagementCenter().agent_update(name, body.model_dump(exclude_none=True))
+        return ManagementCenter().agent_update(name, body.model_dump(exclude_none=True), refresh_runtime=True)
     except ValueError as exc:
         raise _bad_request(exc) from exc
     except Exception as exc:

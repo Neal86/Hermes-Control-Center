@@ -104,7 +104,7 @@ function Find-HermesPython {
 }
 function Test-PackageComplete {
     $required = @(
-        "plugin.yaml","__init__.py","compatibility.py","doctor.ps1","Install-Control-Center-Safe.ps1","install.ps1",
+        "plugin.yaml","__init__.py","compatibility.py","business_guard.py","doctor.ps1","Install-Control-Center-Safe.ps1","install.ps1",
         "dashboard\manifest.json","dashboard\plugin_api.py","dashboard\plugin_api_core.py","dashboard\extra_api.py","dashboard\api_smoke.py","dashboard\build_bundle.py",
         "dashboard\src\api.js","dashboard\src\components.js","dashboard\src\app.js","dashboard\src\control_center_v2.js","dashboard\src\index.js",
         "management\service.py","management\routed_service.py","task_center\service_v3.py","providers\service.py",

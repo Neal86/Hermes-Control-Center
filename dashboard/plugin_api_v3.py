@@ -157,7 +157,7 @@ def _agent_get_impl(name: str) -> dict[str, Any]:
 
 
 def _agent_update_impl(name: str, body: AgentBody) -> dict[str, Any]:
-    return ManagementCenter().agent_update(name, body.model_dump(exclude_none=True))
+    return ManagementCenter().agent_update(name, body.model_dump(exclude_none=True), refresh_runtime=True)
 
 
 def _agent_action_impl(name: str, body: AgentActionBody) -> dict[str, Any]:

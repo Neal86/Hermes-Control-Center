@@ -302,7 +302,9 @@ class ManagementCenter:
             self._write_soul(name, str(args["soul"]))
         return {"ok": True, "output": output, "agent": self.agent_get(name)}
 
-    def agent_update(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    def agent_update(
+        self, name: str, args: dict[str, Any], *, refresh_runtime: bool = False
+    ) -> dict[str, Any]:
         profile = self._normalize_profile(name)
         self._profile_home(profile)
         new_name = str(args.get("name") or "").strip().lower()
@@ -329,12 +331,28 @@ class ManagementCenter:
         if args.get("model") is not None and str(args.get("model") or "").strip():
             self._set_config(profile, "model.default", str(args["model"]).strip())
         invalidated_sessions = 0
+        runtime_refresh: dict[str, Any] | None = None
         if args.get("soul") is not None:
+            gateway_was_running = self._normalized_gateway_state(profile) == "running"
             invalidated_sessions = self._write_soul(profile, str(args["soul"]))
+            if refresh_runtime and gateway_was_running:
+                # DB invalidation alone is insufficient: Gateway caches live
+                # AIAgent objects (including _cached_system_prompt) in memory.
+                # A graceful restart evicts that cache while preserving the DB
+                # transcript, so the next message rebuilds from the new SOUL.
+                runtime_refresh = self.agent_action(profile, "gateway_restart")
+                if not runtime_refresh.get("ok"):
+                    raise RuntimeError(
+                        "SOUL.md was saved and session prompts were invalidated, "
+                        "but the running Gateway could not be refreshed: "
+                        + str(runtime_refresh.get("warning") or runtime_refresh.get("output") or "unknown error")
+                    )
         return {
             "ok": True,
             "agent": self.agent_get(profile),
             "session_prompts_invalidated": invalidated_sessions,
+            "runtime_refreshed": bool(runtime_refresh and runtime_refresh.get("ok")),
+            "runtime_refresh": runtime_refresh,
         }
 
     def _gateway_state(self, profile: str) -> str:
