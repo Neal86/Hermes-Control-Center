@@ -1,6 +1,7 @@
 param(
     [switch]$NoEnable,
-    [switch]$SkipDependencies
+    [switch]$SkipDependencies,
+    [switch]$BuildDashboardFromSource
 )
 
 $ErrorActionPreference = "Stop"
@@ -260,7 +261,8 @@ print("Enabled plugins: " + ", ".join(str(x) for x in actual))
 $RequiredPaths = @(
     "plugin.yaml", "__init__.py", "gateway_isolation.py", "business_guard.py",
     "dashboard\manifest.json", "dashboard\plugin_api.py", "dashboard\plugin_api_core.py", "dashboard\extra_api.py",
-    "dashboard\build_bundle.py", "dashboard\src\api.js", "dashboard\src\components.js", "dashboard\src\app.js",
+    "dashboard\build_bundle.py", "dashboard\verify_bundle.py", "dashboard\dist\index.js", "dashboard\dist\build-manifest.json",
+    "dashboard\src\api.js", "dashboard\src\components.js", "dashboard\src\app.js",
     "dashboard\src\control_center_v2.js", "dashboard\src\control_cleanup.js", "dashboard\src\index.js",
     "doctor.ps1", "compatibility.py", "management\overview.py", "management\service.py", "task_center\service_v3.py",
     "providers\__init__.py", "providers\service.py", "resources\__init__.py", "resources\context.py",
@@ -327,15 +329,25 @@ try {
     Write-Stage "Copying runtime files only"; Copy-RuntimeTree -From $Source -To $StagePlugin
     Write-Stage "Copying WeChat platform adapter"; New-Item -ItemType Directory -Force -Path $StagePlatform | Out-Null
     Get-ChildItem -LiteralPath $PlatformSource -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $StagePlatform -Recurse -Force }
-    Write-Stage "Building Dashboard/Web bundle"
-    $buildLog = Join-Path $TxnRoot "dashboard-build.log"
-    & $HermesPython (Join-Path $StagePlugin "dashboard\build_bundle.py") --root (Join-Path $StagePlugin "dashboard") *> $buildLog
-    $buildExit = $LASTEXITCODE
-    if (Test-Path -LiteralPath $buildLog) { Get-Content -LiteralPath $buildLog | ForEach-Object { Write-Host ("     " + $_) } }
-    if ($buildExit -ne 0) { throw "Dashboard/Web bundle build failed with exit code $buildExit. The build output is shown above." }
-    Write-Stage "Dashboard/Web bundle complete"
+    if ($BuildDashboardFromSource) {
+        Write-Stage "Developer mode: rebuilding Dashboard/Web bundle from source"
+        $buildLog = Join-Path $TxnRoot "dashboard-build.log"
+        & $HermesPython (Join-Path $StagePlugin "dashboard\build_bundle.py") --root (Join-Path $StagePlugin "dashboard") *> $buildLog
+        $buildExit = $LASTEXITCODE
+        if (Test-Path -LiteralPath $buildLog) { Get-Content -LiteralPath $buildLog | ForEach-Object { Write-Host ("     " + $_) } }
+        if ($buildExit -ne 0) { throw "Dashboard/Web developer build failed with exit code $buildExit. The build output is shown above." }
+    } else {
+        Write-Stage "Using prebuilt Dashboard/Web release artifact"
+    }
+    Write-Stage "Verifying prebuilt Dashboard/Web release artifact"
+    $verifyLog = Join-Path $TxnRoot "dashboard-verify.log"
+    & $HermesPython (Join-Path $StagePlugin "dashboard\verify_bundle.py") --root (Join-Path $StagePlugin "dashboard") *> $verifyLog
+    $verifyExit = $LASTEXITCODE
+    if (Test-Path -LiteralPath $verifyLog) { Get-Content -LiteralPath $verifyLog | ForEach-Object { Write-Host ("     " + $_) } }
+    if ($verifyExit -ne 0) { throw "Dashboard/Web release artifact verification failed with exit code $verifyExit. The package was not installed." }
+    Write-Stage "Dashboard/Web release artifact verified"
     Write-Stage "Validating staged files"
-    foreach ($required in @("plugin.yaml","__init__.py","gateway_isolation.py","business_guard.py","dashboard\manifest.json","dashboard\dist\index.js","dashboard\plugin_api.py","dashboard\plugin_api_core.py","dashboard\extra_api.py","providers\service.py","resources\context.py","resources\bindings.py","resources\policy.py","resources\tools.py","resources\wechat_bound.py","wechat\runtime.py","wechat\binding.py","wechat\receiver.py","wechat\sender.py","wechat\state.py","browser\runtime.py","hcc_gateway\lifecycle.py","hcc_gateway\routing.py")) {
+    foreach ($required in @("plugin.yaml","__init__.py","gateway_isolation.py","business_guard.py","dashboard\manifest.json","dashboard\dist\index.js","dashboard\dist\build-manifest.json","dashboard\verify_bundle.py","dashboard\plugin_api.py","dashboard\plugin_api_core.py","dashboard\extra_api.py","providers\service.py","resources\context.py","resources\bindings.py","resources\policy.py","resources\tools.py","resources\wechat_bound.py","wechat\runtime.py","wechat\binding.py","wechat\receiver.py","wechat\sender.py","wechat\state.py","browser\runtime.py","hcc_gateway\lifecycle.py","hcc_gateway\routing.py")) {
         if (-not (Test-Path -LiteralPath (Join-Path $StagePlugin $required))) { throw "Staging validation failed: missing $required" }
     }
     foreach ($required in @("plugin.yaml","adapter.py","adapter_legacy.py")) { if (-not (Test-Path -LiteralPath (Join-Path $StagePlatform $required))) { throw "WeChat platform staging validation failed: missing $required" } }

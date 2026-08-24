@@ -253,9 +253,16 @@ function Install-LatestControlCenter([string]$LatestVersion) {
             throw "Downloaded package version mismatch. Expected v$LatestVersion but commit $mainSha contains v$packageVersion. Update aborted."
         }
 
-        $installer = Get-ChildItem -LiteralPath $extract -Filter "install.ps1" -File -Recurse | Select-Object -First 1
-        if (-not $installer) { throw "Downloaded Control Center package does not contain install.ps1." }
-        Run-PluginInstaller $installer.FullName
+        $packageRoot = Split-Path -Parent $manifest.FullName
+        foreach ($releaseArtifact in @("dashboard\dist\index.js", "dashboard\dist\build-manifest.json", "dashboard\verify_bundle.py")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $packageRoot $releaseArtifact))) {
+                throw "Downloaded Control Center package is not release-ready: missing $releaseArtifact. Update aborted before installation."
+            }
+        }
+
+        $installer = Join-Path $packageRoot "install.ps1"
+        if (-not (Test-Path -LiteralPath $installer)) { throw "Downloaded Control Center package does not contain install.ps1." }
+        Run-PluginInstaller $installer
 
         $installedAfter = Get-ControlCenterInstalledVersion
         if ($installedAfter -ne $LatestVersion) {

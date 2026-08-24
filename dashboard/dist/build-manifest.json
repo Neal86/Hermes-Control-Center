@@ -1,0 +1,21 @@
+{
+  "bundle": "dist/index.js",
+  "bundle_sha256": "80a82349c308350833daffc1f80f6f6dee3c0b64a147199c63a7066300e6037b",
+  "bundle_size_canonical": 143915,
+  "canonical_entry": "src/canonical_ui.js",
+  "golden_main_commit": "34b4bafc42cc521627e0d44ef8f1ae2b934a070e",
+  "hash_mode": "normalized-lf-sha256",
+  "schema": 1,
+  "sources": {
+    "api.js": "2ce3b388064a6c5c524d3aa02d44fff2eec5dadb",
+    "app.js": "4beda6fd4503abf334429a9f9ad569e74d7ccc48",
+    "canonical_ui.js": "a0cf0616cab444d4528e632d8d4139a6f2e4ff56",
+    "cdp_import_v4.js": "e2e40821f581270125bd2ecec2fce042121b6f70",
+    "components.js": "f6f6a44030659ab9a6e5d1ec0461c4040e505194",
+    "control_center_v2.js": "e316d50b96742be340783d2c73f66c755b273f7b",
+    "focus_guard.js": "1dfe96b5112ab91363e87a99f9a6c3857851191e",
+    "provider_models_v3.js": "234f0f9b9e352fe4faa6c9b4f6c42727e32b308c",
+    "resource_selector_v5.js": "ebf2d2195c928819cdc6d111a944a39bf10ec958"
+  },
+  "version": "0.8.53"
+}

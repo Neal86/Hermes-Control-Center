@@ -1,17 +1,18 @@
 {
-  "schema": 1,
-  "golden_main_commit": "3dfd2e2d5424eaa037394fa9c9e8f973fe2c911d",
+  "schema": 2,
+  "golden_main_commit": "34b4bafc42cc521627e0d44ef8f1ae2b934a070e",
   "canonical_entry": "src/canonical_ui.js",
-  "policy": "Dashboard builds must start from the current main line. Legacy compatibility modules may not be silently replaced; intentional changes require an explicit baseline refresh from the then-current main HEAD.",
+  "hash_mode": "normalized-lf-git-blob-sha1",
+  "policy": "Dashboard builds must match the approved source snapshot. Text hashes normalize CRLF/CR to LF so identical GitHub ZIP and Windows checkout content validates consistently; intentional source changes require an explicit baseline refresh.",
   "sources": {
-    "api.js": "d9f7a969799f253f1ea577db867a1976823ec15f",
-    "resource_selector_v5.js": "d5d899049200a74a0077f566fb63932f3fd8fbc9",
-    "components.js": "655a3928e3e4359647edf2b609e6de07949a0e0b",
-    "app.js": "cdda2ab7f6a6aa0eff9bbca61abc1e09ae7bdc13",
-    "control_center_v2.js": "e1ccbd907a66ddb3bcfb3d5d3f8fb65c9dcef87a",
-    "provider_models_v3.js": "6f9cf384e77bdc64c88c7accfe5fc00ae846b0a8",
-    "focus_guard.js": "a0a22ebf88cdc498b48f42b5d464232042a843af",
-    "cdp_import_v4.js": "0a91bad4aef0ade75702a2702a3733ea4c7f6ef9",
-    "canonical_ui.js": "e0b2432a68406432cc00bc84d27885ce22075dd9"
+    "api.js": "2ce3b388064a6c5c524d3aa02d44fff2eec5dadb",
+    "resource_selector_v5.js": "ebf2d2195c928819cdc6d111a944a39bf10ec958",
+    "components.js": "f6f6a44030659ab9a6e5d1ec0461c4040e505194",
+    "app.js": "4beda6fd4503abf334429a9f9ad569e74d7ccc48",
+    "control_center_v2.js": "e316d50b96742be340783d2c73f66c755b273f7b",
+    "provider_models_v3.js": "234f0f9b9e352fe4faa6c9b4f6c42727e32b308c",
+    "focus_guard.js": "1dfe96b5112ab91363e87a99f9a6c3857851191e",
+    "cdp_import_v4.js": "e2e40821f581270125bd2ecec2fce042121b6f70",
+    "canonical_ui.js": "a0cf0616cab444d4528e632d8d4139a6f2e4ff56"
   }
 }

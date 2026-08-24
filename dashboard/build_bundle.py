@@ -20,17 +20,25 @@ COMPATIBILITY_ORDER = [
 ]
 CANONICAL_ENTRY = "canonical_ui.js"
 REGISTER_ENTRY = "index.js"
-# DOM-only enhancements run after canonical registration and are intentionally
-# outside the canonical source baseline. They must never replace app ownership.
 POST_REGISTER_ORDER = ["version_badge.js"]
 ORDER = COMPATIBILITY_ORDER + [CANONICAL_ENTRY, REGISTER_ENTRY] + POST_REGISTER_ORDER
 BASELINE_FILE = "source-baseline.json"
+RELEASE_MANIFEST = "build-manifest.json"
 
 
-def git_blob_sha(path: Path) -> str:
+def normalized_text_bytes(path: Path) -> bytes:
     data = path.read_bytes()
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def canonical_git_blob_sha(path: Path) -> str:
+    data = normalized_text_bytes(path)
     header = f"blob {len(data)}\0".encode("ascii")
     return hashlib.sha1(header + data).hexdigest()
+
+
+def canonical_sha256(path: Path) -> str:
+    return hashlib.sha256(normalized_text_bytes(path)).hexdigest()
 
 
 def validate_baseline(root: Path, src: Path) -> dict:
@@ -43,10 +51,9 @@ def validate_baseline(root: Path, src: Path) -> dict:
         raise SystemExit(f"Invalid dashboard baseline lock: {exc}") from exc
 
     if baseline.get("canonical_entry") != f"src/{CANONICAL_ENTRY}":
-        raise SystemExit(
-            "Dashboard baseline canonical entry mismatch: expected "
-            f"src/{CANONICAL_ENTRY}"
-        )
+        raise SystemExit(f"Dashboard baseline canonical entry mismatch: expected src/{CANONICAL_ENTRY}")
+    if baseline.get("hash_mode") != "normalized-lf-git-blob-sha1":
+        raise SystemExit("Dashboard baseline hash mode is missing or unsupported")
 
     expected = baseline.get("sources")
     if not isinstance(expected, dict):
@@ -55,10 +62,7 @@ def validate_baseline(root: Path, src: Path) -> dict:
     locked = COMPATIBILITY_ORDER + [CANONICAL_ENTRY]
     missing_locks = [name for name in locked if not expected.get(name)]
     if missing_locks:
-        raise SystemExit(
-            "Dashboard baseline is incomplete; missing locks for: "
-            + ", ".join(missing_locks)
-        )
+        raise SystemExit("Dashboard baseline is incomplete; missing locks for: " + ", ".join(missing_locks))
 
     drift = []
     for name in locked:
@@ -66,16 +70,14 @@ def validate_baseline(root: Path, src: Path) -> dict:
         if not path.is_file():
             drift.append(f"{name}: missing")
             continue
-        actual = git_blob_sha(path)
+        actual = canonical_git_blob_sha(path)
         wanted = str(expected[name]).strip().lower()
         if actual != wanted:
             drift.append(f"{name}: expected {wanted}, got {actual}")
     if drift:
         raise SystemExit(
-            "Dashboard source baseline drift detected. Refusing to build from a "
-            "silently changed/older UI module. Start from the current main HEAD "
-            "and explicitly refresh dashboard/source-baseline.json for intentional "
-            "changes.\n  " + "\n  ".join(drift)
+            "Dashboard source baseline drift detected. Refusing to build from changed UI source. "
+            "Line-ending-only CRLF/LF differences are ignored.\n  " + "\n  ".join(drift)
         )
     return baseline
 
@@ -88,7 +90,6 @@ def build(root: Path) -> Path:
         raise SystemExit(f"Missing dashboard source modules: {', '.join(missing)}")
 
     baseline = validate_baseline(root, src)
-
     out_dir = root / "dist"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "index.js"
@@ -99,7 +100,23 @@ def build(root: Path) -> Path:
         f"Golden baseline: {golden}. */\n"
     )
     body = "\n\n".join((src / name).read_text("utf-8").rstrip() for name in ORDER) + "\n"
-    out.write_text(banner + body, "utf-8")
+    out.write_text(banner + body, "utf-8", newline="\n")
+
+    dashboard_manifest = json.loads((root / "manifest.json").read_text("utf-8"))
+    release_manifest = {
+        "schema": 1,
+        "version": str(dashboard_manifest.get("version") or ""),
+        "canonical_entry": baseline.get("canonical_entry"),
+        "golden_main_commit": golden,
+        "hash_mode": "normalized-lf-sha256",
+        "bundle": "dist/index.js",
+        "bundle_sha256": canonical_sha256(out),
+        "bundle_size_canonical": len(normalized_text_bytes(out)),
+        "sources": {name: canonical_git_blob_sha(src / name) for name in COMPATIBILITY_ORDER + [CANONICAL_ENTRY]},
+    }
+    (out_dir / RELEASE_MANIFEST).write_text(
+        json.dumps(release_manifest, indent=2, sort_keys=True) + "\n", "utf-8", newline="\n"
+    )
     return out
 
 
