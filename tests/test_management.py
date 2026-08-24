@@ -192,6 +192,33 @@ def test_soul_write_is_profile_scoped_and_atomic(tmp_path: Path) -> None:
         center.agent_update("../../outside", {"soul": "bad"})
 
 
+def test_soul_update_invalidates_live_session_prompts_but_preserves_history(tmp_path: Path) -> None:
+    import sqlite3
+
+    write_profile(tmp_path)
+    with sqlite3.connect(tmp_path / "state.db") as db:
+        db.execute(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, ended_at REAL, system_prompt TEXT, system_prompt_hash TEXT)"
+        )
+        db.execute("INSERT INTO sessions VALUES ('live', NULL, 'old prompt', 'old-hash')")
+        db.execute("INSERT INTO sessions VALUES ('ended', 1.0, 'historical prompt', 'historical-hash')")
+
+    center = center_with_cli(tmp_path, lambda command, **kwargs: "Gateway: stopped")
+    result = center.agent_update("default", {"soul": "New SOUL"})
+
+    assert result["session_prompts_invalidated"] == 1
+    with sqlite3.connect(tmp_path / "state.db") as conn:
+        live = conn.execute(
+            "SELECT system_prompt, system_prompt_hash FROM sessions WHERE id='live'"
+        ).fetchone()
+        ended = conn.execute(
+            "SELECT system_prompt, system_prompt_hash FROM sessions WHERE id='ended'"
+        ).fetchone()
+    assert live == (None, None)
+    assert ended == ("historical prompt", "historical-hash")
+    assert (tmp_path / "SOUL.md").read_text("utf-8") == "New SOUL"
+
+
 def test_gateway_transition_must_be_verified(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     write_profile(tmp_path)
     calls: list[list[str]] = []

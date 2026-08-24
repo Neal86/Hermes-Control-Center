@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 import time
@@ -216,7 +217,37 @@ class ManagementCenter:
             env=self._env_for(profile),
         )
 
-    def _write_soul(self, profile: str, content: str) -> None:
+    def _invalidate_live_session_prompts(self, profile: str) -> int:
+        """Make live Hermes sessions adopt an edited SOUL on their next turn.
+
+        Hermes persists each session's full system prompt for prefix-cache reuse.
+        Clearing only the prompt and hash preserves conversation history while
+        forcing the normal Hermes restore path to rebuild from current SOUL.md.
+        Ended sessions are intentionally left untouched as historical records.
+        """
+        home = self._profile_home(profile)
+        db_path = home / "state.db"
+        if not db_path.exists():
+            return 0
+        try:
+            with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+                if not conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'"
+                ).fetchone():
+                    return 0
+                cursor = conn.execute(
+                    "UPDATE sessions SET system_prompt=NULL, system_prompt_hash=NULL "
+                    "WHERE ended_at IS NULL AND "
+                    "(system_prompt IS NOT NULL OR system_prompt_hash IS NOT NULL)"
+                )
+                conn.commit()
+                return max(0, int(cursor.rowcount or 0))
+        except sqlite3.Error as exc:
+            raise RuntimeError(
+                f"SOUL.md was saved but live session prompt invalidation failed for {profile}: {exc}"
+            ) from exc
+
+    def _write_soul(self, profile: str, content: str) -> int:
         if len(content) > 200_000:
             raise ValueError("SOUL.md exceeds 200000 characters")
         home = self._profile_home(profile)
@@ -230,6 +261,7 @@ class ManagementCenter:
                 Path(temp_path).unlink(missing_ok=True)
             except OSError:
                 pass
+        return self._invalidate_live_session_prompts(profile)
 
     def agent_create(self, args: dict[str, Any]) -> dict[str, Any]:
         name = self._normalize_profile(str(args.get("name") or ""))
@@ -296,9 +328,14 @@ class ManagementCenter:
             self._set_config(profile, "model.provider", str(args["provider"]).strip())
         if args.get("model") is not None and str(args.get("model") or "").strip():
             self._set_config(profile, "model.default", str(args["model"]).strip())
+        invalidated_sessions = 0
         if args.get("soul") is not None:
-            self._write_soul(profile, str(args["soul"]))
-        return {"ok": True, "agent": self.agent_get(profile)}
+            invalidated_sessions = self._write_soul(profile, str(args["soul"]))
+        return {
+            "ok": True,
+            "agent": self.agent_get(profile),
+            "session_prompts_invalidated": invalidated_sessions,
+        }
 
     def _gateway_state(self, profile: str) -> str:
         try:
