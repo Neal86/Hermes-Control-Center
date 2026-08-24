@@ -172,6 +172,39 @@ function Get-HermesInstallKind {
     return "external"
 }
 
+function Get-RunningHermesDashboardPort {
+    try {
+        $home = $HermesHome.ToLowerInvariant()
+        foreach ($proc in Get-CimInstance Win32_Process -ErrorAction Stop) {
+            $cmd = [string]$proc.CommandLine
+            $exe = [string]$proc.ExecutablePath
+            $combined = ($exe + " " + $cmd).ToLowerInvariant()
+            if (-not $combined.Contains($home) -or -not $combined.Contains("dashboard") -or -not $combined.Contains("hermes")) { continue }
+            if ($cmd -match '(?i)--port\s+(\d+)') { return [int]$Matches[1] }
+            return 9119
+        }
+    } catch {}
+    return 0
+}
+
+function Wait-HermesDashboardStopped {
+    param([int]$TimeoutSeconds = 15)
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if ((Get-RunningHermesDashboardPort) -le 0) { return $true }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return $false
+}
+
+function Start-HermesDashboardAfterUpdate {
+    param([int]$Port)
+    if ($Port -le 0) { return }
+    $cmd = Get-HermesCommand
+    if (-not $cmd) { throw "Hermes update completed but the launcher is unavailable for Dashboard restart." }
+    Write-Host ("  -> Restarting Hermes Dashboard on port " + $Port) -ForegroundColor DarkGray
+    Start-Process -FilePath $cmd.Source -ArgumentList @("dashboard","--skip-build","--no-open","--host","127.0.0.1","--port",[string]$Port) -WindowStyle Hidden | Out-Null
+}
 function Update-Hermes {
     $installed = Get-HermesInstalledVersion
     if (-not $installed) {
@@ -203,8 +236,20 @@ function Update-Hermes {
     $kind = Get-HermesInstallKind
     Write-Step "Updating Hermes Agent v$installed -> v$latest"
     if ($kind -eq "official-windows") {
-        & (Get-HermesCommand).Source update
-        if ($LASTEXITCODE -ne 0) { throw "Hermes runtime update exited with code $LASTEXITCODE." }
+        $dashboardPort = Get-RunningHermesDashboardPort
+        $dashboardWasRunning = $dashboardPort -gt 0
+        try {
+            if ($dashboardWasRunning) {
+                Write-Host ("  -> Stopping Hermes Dashboard before runtime update (port " + $dashboardPort + ")") -ForegroundColor DarkGray
+                & (Get-HermesCommand).Source dashboard --stop | Out-Host
+                if ($LASTEXITCODE -ne 0) { throw "Hermes Dashboard stop failed before runtime update." }
+                if (-not (Wait-HermesDashboardStopped)) { throw "Hermes Dashboard did not stop cleanly before runtime update." }
+            }
+            & (Get-HermesCommand).Source update
+            if ($LASTEXITCODE -ne 0) { throw "Hermes runtime update exited with code $LASTEXITCODE." }
+        } finally {
+            if ($dashboardWasRunning) { Start-HermesDashboardAfterUpdate -Port $dashboardPort }
+        }
         return
     }
     if ($kind -eq "uv-tool") {
