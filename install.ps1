@@ -19,6 +19,8 @@ $PlatformTarget = Join-Path $PluginsRoot "wechat-desktop"
 $LegacyNestedPlatformTarget = Join-Path $PluginsRoot "platforms\wechat-desktop"
 $Requirements = Join-Path $Source "requirements-windows.txt"
 $HermesCommand = Get-Command hermes -ErrorAction SilentlyContinue
+$GatewayRestartVerifyTimeoutSeconds = 30
+$GatewayRestartVerifyPollMilliseconds = 250
 
 function Get-GatewayPidPath {
     param([string]$Profile)
@@ -117,14 +119,15 @@ function Restart-PreviouslyRunningRuntime {
         if ($LASTEXITCODE -ne 0) { throw "Gateway restart failed for profile '$profile'." }
         $afterPid = 0
         $reloaded = $false
-        for ($attempt = 0; $attempt -lt 20; $attempt++) {
-            Start-Sleep -Milliseconds 250
+        $verifyDeadline = [DateTime]::UtcNow.AddSeconds($GatewayRestartVerifyTimeoutSeconds)
+        do {
+            Start-Sleep -Milliseconds $GatewayRestartVerifyPollMilliseconds
             $afterPid = Read-GatewayPid -PidPath $pidPath
             if ($afterPid -gt 0 -and $afterPid -ne $beforePid -and (Get-Process -Id $afterPid -ErrorAction SilentlyContinue)) {
                 $reloaded = $true
                 break
             }
-        }
+        } while ([DateTime]::UtcNow -lt $verifyDeadline)
         if (-not $reloaded) { throw "Gateway restart verification failed for profile '$profile' (before=$beforePid after=$afterPid)." }
         Write-Stage ("Gateway runtime reloaded for profile " + $profile + " (pid " + $afterPid + ")")
     }

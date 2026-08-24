@@ -62,3 +62,13 @@ def test_installer_verifies_gateway_restart_with_a_new_live_pid() -> None:
         "Gateway restart verification failed",
     ):
         assert required in INSTALLER, required
+
+def test_installer_waits_for_delayed_gateway_pid_publication() -> None:
+    for required in (
+        "$GatewayRestartVerifyTimeoutSeconds = 30",
+        "$GatewayRestartVerifyPollMilliseconds = 250",
+        "AddSeconds($GatewayRestartVerifyTimeoutSeconds)",
+        "Start-Sleep -Milliseconds $GatewayRestartVerifyPollMilliseconds",
+        "while ([DateTime]::UtcNow -lt $verifyDeadline)",
+    ):
+        assert required in INSTALLER, required
