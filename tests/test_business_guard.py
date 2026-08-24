@@ -65,3 +65,9 @@ def test_wrong_initial_capture_does_not_poison_later_real_query():
     assert state["wrong_page_seen"] is True
     assert state["wrong_page_after_query"] is False
     assert state["verified_minimum"] is True
+
+
+def test_identifier_adjacent_to_cjk_text_is_extracted():
+    msg = "OBS0402608230VX\u8fd9\u4e2a\u8ba2\u5355"
+    state = _evidence_state([{"role": "user", "content": msg}], msg)
+    assert state["identifiers"] == ["OBS0402608230VX"]

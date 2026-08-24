@@ -23,7 +23,7 @@ _BUSINESS_TERMS = (
     "\u6362\u6807",  # relabel
     "fba", "sku", "tracking", "shipment", "warehouse", "order",
 )
-_IDENTIFIER_RE = re.compile(r"\b(?:OBS[A-Z0-9-]{5,}|[A-Z]{2,}[A-Z0-9-]{6,}|\d{8,})\b", re.I)
+_IDENTIFIER_RE = re.compile(r"(?<![A-Z0-9])(?:OBS[A-Z0-9-]{5,}|[A-Z]{2,}[A-Z0-9-]{6,}|\d{8,})(?![A-Z0-9-])", re.I)
 _QUERY_TOOLS = {
     "browser_type", "browser_console", "browser_navigate", "browser_click", "browser_cdp",
     "computer_use", "terminal", "terminal_exec", "shell", "shell_run",
