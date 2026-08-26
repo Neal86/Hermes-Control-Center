@@ -81,3 +81,30 @@ def test_gateway_start_is_recognized_as_a_windows_spawn_command() -> None:
     assert cli._is_gateway_spawn_command(["hermes.exe", "-p", "11", "gateway", "start"])
     assert cli._is_gateway_spawn_command(["hermes.exe", "gateway", "restart"])
     assert not cli._is_gateway_spawn_command(["hermes.exe", "-p", "11", "gateway", "status"])
+
+
+def test_cli_resolves_hermes_from_hermes_home_when_path_is_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    hermes_home = tmp_path / "custom-hermes"
+    binary = hermes_home / "bin" / "hermes.exe"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"")
+    monkeypatch.setattr(compat.shutil, "which", lambda value: None)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    cli = compat.HermesCLI()
+
+    assert cli.hermes == str(binary.resolve())
+
+
+def test_cli_resolves_hermes_from_default_user_home_when_path_is_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    hermes_home = tmp_path / ".hermes"
+    binary = hermes_home / "bin" / "hermes.exe"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"")
+    monkeypatch.setattr(compat.shutil, "which", lambda value: None)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(compat.Path, "home", staticmethod(lambda: tmp_path))
+
+    cli = compat.HermesCLI()
+
+    assert cli.hermes == str(binary.resolve())

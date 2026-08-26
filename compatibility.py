@@ -12,6 +12,42 @@ from pathlib import Path
 from typing import Any
 
 
+def _resolve_hermes_command(hermes: str | None = None) -> str:
+    requested = str(hermes or "").strip()
+    if requested:
+        resolved = shutil.which(requested)
+        if resolved:
+            return resolved
+        candidate = Path(requested).expanduser()
+        if candidate.is_file():
+            return str(candidate.resolve())
+        return requested
+
+    resolved = shutil.which("hermes")
+    if resolved:
+        return resolved
+
+    roots: list[Path] = []
+    env_home = str(os.environ.get("HERMES_HOME") or "").strip()
+    if env_home:
+        roots.append(Path(env_home).expanduser())
+    roots.append(Path.home() / ".hermes")
+
+    executable_names = ("hermes.exe", "hermes") if os.name == "nt" else ("hermes", "hermes.exe")
+    seen: set[str] = set()
+    for root in roots:
+        key = os.path.normcase(os.path.normpath(str(root)))
+        if key in seen:
+            continue
+        seen.add(key)
+        for executable_name in executable_names:
+            candidate = root / "bin" / executable_name
+            if candidate.is_file():
+                return str(candidate.resolve())
+
+    return "hermes"
+
+
 class HermesCLI:
     """Small subprocess adapter used by Control Center management services.
 
@@ -21,7 +57,7 @@ class HermesCLI:
     """
 
     def __init__(self, hermes: str | None = None) -> None:
-        self.hermes = hermes or shutil.which("hermes") or "hermes"
+        self.hermes = _resolve_hermes_command(hermes)
 
     def profile_command(self, profile: str | None, *args: str) -> list[str]:
         name = str(profile or "default").strip().lower()
@@ -158,11 +194,11 @@ def _supports(hermes: str, command: str) -> bool:
 
 
 def _resolve_binary(hermes: str | None = None) -> str | None:
-    requested = str(hermes or "hermes")
-    resolved = shutil.which(requested)
+    command = _resolve_hermes_command(hermes)
+    resolved = shutil.which(command)
     if resolved:
         return resolved
-    candidate = Path(requested).expanduser()
+    candidate = Path(command).expanduser()
     if candidate.is_file():
         return str(candidate.resolve())
     return None
