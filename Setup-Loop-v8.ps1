@@ -91,10 +91,16 @@ function Launch-DashboardDetached {
     Remove-Item $out,$err -Force -ErrorAction SilentlyContinue
     try {
         $args = @("-NoLogo","-NoProfile","-ExecutionPolicy","Bypass","-File",('"' + $Dashboard + '"'))
-        $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $args -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
-        Write-Host ("Dashboard launch started in background (PID " + $proc.Id + ").") -ForegroundColor Green
-        Write-Host "The menu is available immediately; no Enter key is required." -ForegroundColor DarkGray
-        return 0
+        Write-Host "Starting Hermes Dashboard and waiting for readiness..." -ForegroundColor DarkGray
+        $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $args -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
+        if (Test-Path $out) { Get-Content $out -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ } }
+        if (Test-Path $err) { Get-Content $err -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ -ForegroundColor Yellow } }
+        if ($proc.ExitCode -eq 0) {
+            Write-Host "Hermes Dashboard opened successfully." -ForegroundColor Green
+            return 0
+        }
+        Write-Host ("Dashboard launcher failed with exit code " + $proc.ExitCode + ".") -ForegroundColor Red
+        return [int]$proc.ExitCode
     } catch {
         Write-Host ("Unable to start Dashboard launcher: " + $_.Exception.Message) -ForegroundColor Red
         return 2

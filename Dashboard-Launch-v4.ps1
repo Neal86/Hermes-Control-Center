@@ -6,7 +6,7 @@ $ProgressPreference = "SilentlyContinue"
 
 $HostName = "127.0.0.1"
 $PreferredPort = 9119
-$TimeoutSeconds = 30
+$TimeoutSeconds = 90
 $HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
 $env:HERMES_HOME = $HermesHome
 $LogDir = Join-Path $HermesHome "logs\control-center"
@@ -41,8 +41,12 @@ function Test-ControlCenterApi {
 }
 
 function Find-Hermes {
-    $official = Join-Path $HermesHome "hermes-agent\bin\hermes.exe"
-    if (Test-Path -LiteralPath $official) { return $official }
+    foreach ($candidate in @(
+        (Join-Path $HermesHome "bin\hermes.exe"),
+        (Join-Path $HermesHome "hermes-agent\bin\hermes.exe")
+    )) {
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
     $cmd = Get-Command hermes -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
     return $null
