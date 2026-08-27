@@ -23,7 +23,8 @@ def test_hermes_update_restores_previously_running_dashboard() -> None:
     assert "$dashboardWasRunning = $dashboardPort -gt 0" in SETUP
     assert "finally {" in SETUP
     assert "Start-HermesDashboardAfterUpdate -Port $dashboardPort" in SETUP
-    assert '"dashboard","--skip-build","--no-open","--host","127.0.0.1","--port"' in SETUP
+    assert '$DashboardLauncher = Join-Path $Root "Dashboard-Launch-v4.ps1"' in SETUP
+    assert '-PreferredPort $Port -NoOpen' in SETUP
 
 
 def test_dashboard_force_stop_is_scoped_to_detected_dashboard_processes() -> None:
