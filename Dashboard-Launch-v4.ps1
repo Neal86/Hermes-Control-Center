@@ -352,6 +352,9 @@ elseif ($preferredInUse) {
     Write-Host "No usable Hermes Dashboard is running there. Starting Hermes Dashboard on port $Port instead." -ForegroundColor Yellow
 }
 
+$hermesAgentRoot = Find-HermesAgentRoot -HermesPath $hermes
+Ensure-DashboardWebBuild -AgentRoot $hermesAgentRoot
+
 $DashboardUrl = "http://127.0.0.1:$Port"
 $StdoutLog = Join-Path $LogDir ("dashboard-$Port.out.log")
 $StderrLog = Join-Path $LogDir ("dashboard-$Port.err.log")
