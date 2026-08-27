@@ -307,8 +307,6 @@ function Show-RuntimeDiagnostics {
 
 $hermes = Find-Hermes
 if (-not $hermes) { throw "Hermes is not installed or its launcher could not be found." }
-$hermesAgentRoot = Find-HermesAgentRoot -HermesPath $hermes
-Ensure-DashboardWebBuild -AgentRoot $hermesAgentRoot
 
 $Port = $PreferredPort
 $preferredInUse = Test-LocalPort -Port $PreferredPort
