@@ -1,4 +1,7 @@
-param()
+param(
+    [int]$PreferredPort = 9119,
+    [switch]$NoOpen
+)
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
