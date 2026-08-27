@@ -14,7 +14,7 @@ $ProgressPreference = "SilentlyContinue"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $LocalInstaller = Join-Path $Root "install.ps1"
 $LocalDoctor = Join-Path $Root "doctor.ps1"
-$DashboardLauncher = Join-Path $Root "Dashboard-Launch-v3.ps1"
+$DashboardLauncher = Join-Path $Root "Dashboard-Launch-v4.ps1"
 $HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA -and (Test-Path (Join-Path $env:LOCALAPPDATA "hermes"))) { Join-Path $env:LOCALAPPDATA "hermes" } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
 $env:HERMES_HOME = $HermesHome
 
@@ -228,8 +228,10 @@ function Start-HermesDashboardAfterUpdate {
     if ($Port -le 0) { return }
     $cmd = Get-HermesCommand
     if (-not $cmd) { throw "Hermes update completed but the launcher is unavailable for Dashboard restart." }
-    Write-Host ("  -> Restarting Hermes Dashboard on port " + $Port) -ForegroundColor DarkGray
-    Start-Process -FilePath $cmd.Source -ArgumentList @("dashboard","--skip-build","--no-open","--host","127.0.0.1","--port",[string]$Port) -WindowStyle Hidden | Out-Null
+    if (-not (Test-Path -LiteralPath $DashboardLauncher)) { throw "Hermes update completed but the verified Dashboard launcher is missing." }
+    Write-Host ("  -> Restarting Hermes Dashboard on port " + $Port + " with dependency preflight") -ForegroundColor DarkGray
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $DashboardLauncher -PreferredPort $Port -NoOpen
+    if ($LASTEXITCODE -ne 0) { throw "Hermes Dashboard failed to restart after runtime update (exit code $LASTEXITCODE)." }
 }
 
 function Get-RunningHermesGatewayProfilesForUpdate {

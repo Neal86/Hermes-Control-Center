@@ -307,6 +307,8 @@ function Show-RuntimeDiagnostics {
 
 $hermes = Find-Hermes
 if (-not $hermes) { throw "Hermes is not installed or its launcher could not be found." }
+$hermesAgentRoot = Find-HermesAgentRoot -HermesPath $hermes
+Ensure-DashboardWebBuild -AgentRoot $hermesAgentRoot
 
 $Port = $PreferredPort
 $preferredInUse = Test-LocalPort -Port $PreferredPort
@@ -315,7 +317,7 @@ $preferredIsHermes = $preferredOwner -gt 0 -and (Test-IsHermesDashboardProcess -
 
 if ($preferredInUse -and (Test-ControlCenterApi -Port $PreferredPort)) {
     Write-Host "Hermes Dashboard is already running with Control Center API on port $PreferredPort." -ForegroundColor Green
-    Start-Process "http://127.0.0.1:$PreferredPort/management-center" | Out-Null
+    if (-not $NoOpen) { Start-Process "http://127.0.0.1:$PreferredPort/management-center" | Out-Null }
     exit 0
 }
 
@@ -368,8 +370,10 @@ $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 while ((Get-Date) -lt $deadline) {
     if ((Test-LocalPort -Port $Port) -and (Test-ControlCenterApi -Port $Port)) {
         Write-Host "Hermes Dashboard and Control Center API are ready on port $Port." -ForegroundColor Green
-        Start-Process "$DashboardUrl/management-center" | Out-Null
-        Write-Host "Opened $DashboardUrl/management-center" -ForegroundColor Green
+        if (-not $NoOpen) {
+            Start-Process "$DashboardUrl/management-center" | Out-Null
+            Write-Host "Opened $DashboardUrl/management-center" -ForegroundColor Green
+        }
         exit 0
     }
     try { $proc.Refresh() } catch {}
