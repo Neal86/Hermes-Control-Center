@@ -54,6 +54,117 @@ function Find-Hermes {
     return $null
 }
 
+function Find-HermesAgentRoot {
+    param([string]$HermesPath)
+    $candidates = New-Object System.Collections.Generic.List[string]
+    $candidates.Add((Join-Path $HermesHome "hermes-agent"))
+    if ($HermesPath) {
+        try {
+            $binDir = Split-Path -Parent $HermesPath
+            $candidates.Add((Split-Path -Parent $binDir))
+        } catch {}
+    }
+    foreach ($candidate in $candidates) {
+        if (-not $candidate) { continue }
+        if ((Test-Path -LiteralPath (Join-Path $candidate "package.json")) -and
+            (Test-Path -LiteralPath (Join-Path $candidate "web\package.json")) -and
+            (Test-Path -LiteralPath (Join-Path $candidate "hermes_cli"))) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+function Find-Npm {
+    $portable = Join-Path $HermesHome "runtime\node\npm.cmd"
+    if (Test-Path -LiteralPath $portable) { return $portable }
+    foreach ($name in @("npm.cmd", "npm")) {
+        $cmd = Get-Command $name -ErrorAction SilentlyContinue
+        if ($cmd) { return $cmd.Source }
+    }
+    return $null
+}
+
+function Install-PortableNode {
+    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
+    $base = "https://nodejs.org/dist/latest-v22.x"
+    $portableRoot = Join-Path $HermesHome "runtime\node"
+    $tempRoot = Join-Path $env:TEMP ("hermes-node-" + [Guid]::NewGuid().ToString("N"))
+    Write-Host "Node.js/npm is missing. Installing a private portable Node.js runtime for Hermes..." -ForegroundColor Yellow
+    try {
+        New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+        $sums = (Invoke-WebRequest -UseBasicParsing -Uri ($base + "/SHASUMS256.txt") -TimeoutSec 30).Content
+        $match = [regex]::Match($sums, "(?m)^([0-9a-f]{64})  (node-v([0-9]+\.[0-9]+\.[0-9]+)-win-$arch\.zip)$")
+        if (-not $match.Success) { throw "Could not resolve the official Node.js Windows $arch archive." }
+        $expectedHash = $match.Groups[1].Value.ToLowerInvariant()
+        $fileName = $match.Groups[2].Value
+        $version = $match.Groups[3].Value
+        $zip = Join-Path $tempRoot $fileName
+        Invoke-WebRequest -UseBasicParsing -Uri ($base + "/" + $fileName) -OutFile $zip -TimeoutSec 120
+        $actualHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualHash -ne $expectedHash) { throw "Node.js download checksum verification failed." }
+        $extract = Join-Path $tempRoot "extract"
+        Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
+        $source = Get-ChildItem -LiteralPath $extract -Directory | Select-Object -First 1
+        if (-not $source) { throw "Downloaded Node.js archive did not contain the expected folder." }
+        Remove-Item -LiteralPath $portableRoot -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path $portableRoot | Out-Null
+        Get-ChildItem -LiteralPath $source.FullName -Force | ForEach-Object { Move-Item -LiteralPath $_.FullName -Destination $portableRoot -Force }
+        $npm = Join-Path $portableRoot "npm.cmd"
+        $node = Join-Path $portableRoot "node.exe"
+        if (-not (Test-Path -LiteralPath $npm) -or -not (Test-Path -LiteralPath $node)) { throw "Portable Node.js installation did not produce node.exe and npm.cmd." }
+        $env:PATH = "$portableRoot;$env:PATH"
+        Write-Host "Portable Node.js v$version is ready for Hermes." -ForegroundColor Green
+        return $npm
+    } finally {
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Ensure-DashboardWebBuild {
+    param([string]$AgentRoot)
+    if (-not $AgentRoot) { throw "Hermes source root could not be located; cannot prepare the Dashboard web UI." }
+    $webDistIndex = Join-Path $AgentRoot "hermes_cli\web_dist\index.html"
+    if (Test-Path -LiteralPath $webDistIndex) {
+        Write-Host "[1/3] Hermes Dashboard web UI ........ ready" -ForegroundColor DarkGray
+        return
+    }
+
+    Write-Host "[1/3] Hermes Dashboard web UI ........ missing" -ForegroundColor Yellow
+    $npm = Find-Npm
+    if (-not $npm) { $npm = Install-PortableNode }
+    if (-not $npm) { throw "npm is unavailable after automatic dependency repair." }
+
+    Write-Host "[2/3] Dashboard dependencies .......... preparing" -ForegroundColor Cyan
+    $savedNodeEnv = $env:NODE_ENV
+    try {
+        Remove-Item Env:NODE_ENV -ErrorAction SilentlyContinue
+        Push-Location $AgentRoot
+        try {
+            & $npm install --include=dev --workspace web
+            if ($LASTEXITCODE -ne 0) { throw "npm install for the Hermes web workspace failed with exit code $LASTEXITCODE." }
+            Write-Host "[2/3] Dashboard dependencies .......... ready" -ForegroundColor Green
+            Write-Host "[3/3] Dashboard web build ............ building" -ForegroundColor Cyan
+            & $npm run build -w web
+            $buildExit = $LASTEXITCODE
+            if ($buildExit -ne 0) {
+                Write-Host "Initial Dashboard build failed; retrying once..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 2
+                & $npm run build -w web
+                $buildExit = $LASTEXITCODE
+            }
+            if ($buildExit -ne 0) { throw "Hermes Dashboard web build failed with exit code $buildExit." }
+        } finally {
+            Pop-Location
+        }
+    } finally {
+        if ($null -eq $savedNodeEnv) { Remove-Item Env:NODE_ENV -ErrorAction SilentlyContinue } else { $env:NODE_ENV = $savedNodeEnv }
+    }
+
+    if (-not (Test-Path -LiteralPath $webDistIndex)) { throw "Hermes Dashboard build completed but hermes_cli\web_dist\index.html is still missing." }
+    Write-Host "[3/3] Dashboard web build ............ ready" -ForegroundColor Green
+}
+
 function Get-PortOwnerPid {
     param([int]$Port)
     try {
