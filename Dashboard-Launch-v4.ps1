@@ -8,7 +8,6 @@ Set-StrictMode -Version Latest
 $ProgressPreference = "SilentlyContinue"
 
 $HostName = "127.0.0.1"
-$PreferredPort = 9119
 $TimeoutSeconds = 90
 $HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "hermes" } else { Join-Path $HOME ".hermes" }
 $env:HERMES_HOME = $HermesHome
