@@ -5,5 +5,6 @@ FROM nousresearch/hermes-agent:v2026.9.14
 # Work around the upstream s6 gateway supervision SIGTERM loop in Docker.
 # Keep gateway as the container foreground process; Coolify/Docker handles container restarts.
 ENV HERMES_GATEWAY_NO_SUPERVISE=1
+ENV S6_PROFILE_GATEWAY_SCANDIR=/run/service/.no-gateway
 
 CMD ["gateway", "run"]
